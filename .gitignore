@@ -1,0 +1,22 @@
+/target/
+**/*.rs.bk
+
+# Local node data (never publish)
+/data/
+/launch-data/
+/fresh-user/
+**/peer_key
+**/chain/
+**/utxo/
+**/LOCK
+
+# Release binaries (host on Drive / GitHub Releases instead)
+/release-package/*.exe
+/release-package/dbc-node
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

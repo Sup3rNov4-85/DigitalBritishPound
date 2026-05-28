@@ -1,0 +1,9 @@
+# DBC community peer list — one libp2p multiaddr per line.
+#
+# FOUNDER / LAUNCH RULE: Do NOT put your home IP or personal VPS here if you
+# want an anonymous launch. Leave this file empty in the official release.
+# Early miners and community pools add their own addresses in their repos or
+# forum posts (see README "Anonymous fair launch").
+#
+# Example (community-run seed on a neutral VPS):
+# /ip4/203.0.113.10/tcp/8333/p2p/12D3KooWExamplePeerIdExamplePeerIdExample
