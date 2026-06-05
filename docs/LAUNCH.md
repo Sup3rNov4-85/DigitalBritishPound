@@ -2,7 +2,7 @@
 
 ## Download (Windows package)
 
-**Official release zip:** [Google Drive](https://drive.google.com/file/d/1kmcTLNddgUhUpEO0TsxkcBNl-FeckxYT/view?usp=sharing)
+**Official release zip:** [Google Drive](https://drive.google.com/file/d/1nLbqnzqZ2hiZ7s8aJc-RqDwLrwctp-X_/view?usp=sharing)
 
 Contents: `dbc-installer.exe`, `dbc-ui.exe`, `dbc-node.exe`, `genesis.json`, `README.txt`, `DBC_Node_README.pdf`, `SHA256SUMS.txt`
 
