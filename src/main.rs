@@ -59,6 +59,10 @@ enum Command {
         peers_file: PathBuf,
         #[arg(long)]
         mine: bool,
+        /// Optional file-based mining control (for the Windows UI).
+        /// If provided, the node mines only when this file contains "1".
+        #[arg(long)]
+        mine_ctl_file: Option<PathBuf>,
         #[arg(long)]
         address: Option<String>,
         /// Kademlia DHT for decentralised discovery (default on).
@@ -162,11 +166,14 @@ async fn main() -> anyhow::Result<()> {
             bootstrap,
             peers_file,
             mine,
+            mine_ctl_file,
             address,
             no_dht,
             mdns,
         } => {
-            let payout = if mine {
+            // If mining is controlled via a file (UI toggle), we still need a payout address
+            // so mining attempts can produce blocks.
+            let payout = if mine || mine_ctl_file.is_some() {
                 Some(resolve_payout(address)?)
             } else {
                 None
@@ -186,6 +193,7 @@ async fn main() -> anyhow::Result<()> {
                     bootstrap: bootstrap?,
                     peers_file: peers_path,
                     mine,
+                    mine_ctl_file,
                     payout,
                     enable_mdns: mdns,
                     enable_dht: !no_dht,

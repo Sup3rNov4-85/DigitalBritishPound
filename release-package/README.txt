@@ -9,15 +9,17 @@ Bootstrap seed (first node):
 Quick start (Windows PowerShell)
 1) Create a wallet (SAVE the 24 words; never share them):
    .\dbc-node.exe wallet-new
+   (If you installed via `dbc-installer.exe`, use the installed `DBC Launcher` from Start Menu instead.)
 
-2) Start node (sync). Start mining in the UI:
-   .\dbc-node.exe run --listen /ip4/0.0.0.0/tcp/8334 `
-     --bootstrap /dns4/digitalbritishpound.duckdns.org/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m
+2) Start the Windows launcher UI:
+   .\dbc-ui.exe
 
-In the Windows UI:
-- set payout address to your `dbc1...`
-- click Start Miner
-- click Stop Miner to pause mining
+In the UI:
+- set your payout address to your `dbc1...`
+- click Start Node (sync)
+- click Start Miner to mine (Stop Miner pauses)
+
+You should see blocks sync and mining logs in the UI.
 
 Wallet basics
 - Receive: share your dbc1... address.

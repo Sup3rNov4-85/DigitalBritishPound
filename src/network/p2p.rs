@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::{fs, path::PathBuf};
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -77,6 +78,9 @@ pub struct P2pConfig {
     pub bootstrap: Vec<Multiaddr>,
     pub peers_file: Option<std::path::PathBuf>,
     pub mine: bool,
+    /// Optional file-based mining control. When set, the node will mine only when this file contains "1".
+    /// This lets a GUI toggle mining without restarting the node.
+    pub mine_ctl_file: Option<PathBuf>,
     pub payout: Option<Address>,
     /// mDNS is for local dev only; keep false for anonymous public mining.
     pub enable_mdns: bool,
@@ -179,16 +183,40 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
         info!("mDNS disabled (use --mdns only on trusted LANs)");
     }
 
+    let mining_controlled = cfg.mine || cfg.mine_ctl_file.is_some();
     let (mine_tx, mut mine_rx) = tokio::sync::mpsc::channel::<()>(4);
-    if cfg.mine {
+
+    if mining_controlled {
+        // If a control file is provided, ensure it exists so the node has a deterministic initial state.
+        if let Some(ref p) = cfg.mine_ctl_file {
+            let _ = fs::write(p, if cfg.mine { "1" } else { "0" });
+        }
+
+        let always_mine = cfg.mine;
+        let mine_ctl_file = cfg.mine_ctl_file.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(
                 crate::consensus::TARGET_BLOCK_TIME_SECS.min(30),
             ));
+
             loop {
                 interval.tick().await;
-                if mine_tx.send(()).await.is_err() {
-                    break;
+
+                let enabled = if always_mine {
+                    true
+                } else if let Some(ref p) = mine_ctl_file {
+                    match fs::read_to_string(p) {
+                        Ok(s) => s.trim() == "1",
+                        Err(_) => false,
+                    }
+                } else {
+                    false
+                };
+
+                if enabled {
+                    if mine_tx.send(()).await.is_err() {
+                        break;
+                    }
                 }
             }
         });
@@ -231,7 +259,7 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
             _ = kad_refresh.tick(), if enable_dht => {
                 let _ = swarm.behaviour_mut().kad.bootstrap();
             }
-            Some(()) = mine_rx.recv(), if cfg.mine => {
+            Some(()) = mine_rx.recv() => {
                 if let Some(payout) = cfg.payout {
                     if let Err(e) = try_mine_and_publish(&mut swarm, &chain, payout, &blocks_topic).await {
                         warn!("mine failed: {e}");

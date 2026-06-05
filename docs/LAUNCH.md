@@ -2,11 +2,16 @@
 
 ## Download (Windows package)
 
-**Official release zip:** [Google Drive](https://drive.google.com/file/d/1P1onJ4yWRWSDd5GAt3Be9ooBDCL7S-Oi/view?usp=drive_link)
+**Official release zip:** [Google Drive](https://drive.google.com/file/d/1kmcTLNddgUhUpEO0TsxkcBNl-FeckxYT/view?usp=sharing)
 
-Contents: `dbc-node.exe`, `genesis.json`, `README.txt`, `DBC_Node_README.pdf`, `SHA256SUMS.txt`
+Contents: `dbc-installer.exe`, `dbc-ui.exe`, `dbc-node.exe`, `genesis.json`, `README.txt`, `DBC_Node_README.pdf`, `SHA256SUMS.txt`
 
 Verify file hashes with `SHA256SUMS.txt` after download.
+
+### Windows installer (recommended)
+1) Download and run `dbc-installer.exe` (built from `installer/dbc-installer.nsi`).
+2) Use the Start Menu shortcut `Digital British Coin (DBC) -> DBC Launcher`.
+3) In the UI: set your payout address (`dbc1...`), click **Start Node**, then **Start Miner**.
 
 ## Official genesis
 

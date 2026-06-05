@@ -6,7 +6,7 @@ Rust full-node prototype aligned with the DBC whitepaper: CPU-oriented proof-of-
 
 ## Download & launch
 
-- **Windows release zip:** [Google Drive](https://drive.google.com/file/d/1P1onJ4yWRWSDd5GAt3Be9ooBDCL7S-Oi/view?usp=drive_link)
+- **Windows release zip:** [Google Drive](https://drive.google.com/file/d/1kmcTLNddgUhUpEO0TsxkcBNl-FeckxYT/view?usp=sharing)
 - **Launch details (genesis, bootstrap, verify):** [docs/LAUNCH.md](docs/LAUNCH.md)
 - **Public whitepaper PDF:** [docs/DBC_Whitepaper_Public.pdf](docs/DBC_Whitepaper_Public.pdf)
 
@@ -199,8 +199,7 @@ cargo run --release -- export-genesis --out genesis.json
 #
 # First node you know about (bootstrap) will serve block 0 over P2P.
 cargo run --release -- run --listen /ip4/0.0.0.0/tcp/8333 \
-  --bootstrap /ip4/176.24.48.191/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m \
-  --mine --address dbc1YOURADDRESS
+  --bootstrap /dns4/digitalbritishpound.duckdns.org/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m
 
 # Optional: community multiaddrs (from forum, not founder home IP)
 cargo run --release -- run --listen /ip4/0.0.0.0/tcp/8333 \
@@ -304,6 +303,8 @@ cargo run --release -- run --listen /ip4/0.0.0.0/tcp/8333 \
 ```
 
 Then click **Start Miner** in the UI (or use `--mine --address ...` as a CLI fallback).
+
+In the Windows package, the UI executable is `dbc-ui.exe`.
 
 **With community bootstrap** (replace with volunteer VPS multiaddr from forum):
 
