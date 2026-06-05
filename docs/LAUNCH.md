@@ -16,7 +16,7 @@ Verify file hashes with `SHA256SUMS.txt` after download.
 ## Join the network (bootstrap)
 
 ```
-/ip4/176.24.48.191/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m
+/dns4/digitalbritishpound.duckdns.org/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m
 ```
 
 ## Quick start (Windows)
@@ -24,9 +24,15 @@ Verify file hashes with `SHA256SUMS.txt` after download.
 ```powershell
 .\dbc-node.exe wallet-new
 .\dbc-node.exe run --listen /ip4/0.0.0.0/tcp/8334 `
-  --bootstrap /ip4/176.24.48.191/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m `
-  --mine --address dbc1YOUR_ADDRESS_HERE
+  --bootstrap /dns4/digitalbritishpound.duckdns.org/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m
 ```
+
+### Start mining / stop mining (via UI)
+
+Once the node is running, use the Windows UI to:
+- set your **payout address** (`dbc1...`)
+- click **Start Miner**
+- click **Stop Miner** to pause mining
 
 ## Whitepaper
 

@@ -59,13 +59,19 @@ If you just want to **run a node + mine**, follow this exactly.
 
 Copy the `dbc1...` address it prints (that is where mining rewards go).
 
-3) **Start node + mine (do NOT run `init`)**
+3) **Start node (sync). Start mining using the UI toggle (do NOT run `init`).**
 
 ```powershell
 .\dbc-node.exe run --listen /ip4/0.0.0.0/tcp/8334 `
-  --bootstrap /ip4/176.24.48.191/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m `
-  --mine --address dbc1PASTE_YOUR_ADDRESS_HERE
+  --bootstrap /dns4/digitalbritishpound.duckdns.org/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m
 ```
+
+Open the DBC **Wallet/Miner UI** from the Windows installer:
+- Set your **payout address** to your `dbc1...`
+- Click **Start Miner**
+- Click **Stop Miner** to pause
+
+If you do not have the UI installed, the CLI fallback is to add `--mine --address dbc1PASTE_YOUR_ADDRESS_HERE`.
 
 Leave it running. You will see blocks sync from height 0 and then it will start mining.
 
@@ -77,13 +83,14 @@ Leave it running. You will see blocks sync from height 0 and then it will start 
 ./dbc-node wallet-new
 ```
 
-2) **Start node + mine (do NOT run `init`)**
+2) **Start node (sync). Start mining using the UI toggle (do NOT run `init`).**
 
 ```bash
 ./dbc-node run --listen /ip4/0.0.0.0/tcp/8334 \
-  --bootstrap /ip4/176.24.48.191/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m \
-  --mine --address dbc1PASTE_YOUR_ADDRESS_HERE
+  --bootstrap /dns4/digitalbritishpound.duckdns.org/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m
 ```
+
+If you do not have the UI available, the CLI fallback is to add `--mine --address dbc1PASTE_YOUR_ADDRESS_HERE`.
 
 ### Two rules everyone must follow
 
@@ -148,7 +155,7 @@ Important:
 
 Use this multiaddr to join the network and sync block 0:
 
-`/ip4/176.24.48.191/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m`
+`/dns4/digitalbritishpound.duckdns.org/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m`
 
 If you are behind a home router, the seed operator must port-forward **TCP 8333** to the machine running `dbc-node`.
 
@@ -249,8 +256,9 @@ cargo run -- mine --blocks 10 --address dbc1YOURADDRESS
 # 5. Chain status
 cargo run -- info
 
-# 6. Join network + mine (peers via DHT / community bootstrap — not founder)
-cargo run -- run --listen /ip4/0.0.0.0/tcp/8333 --mine --address dbc1YOURADDRESS
+# 6. Join network (sync from bootstrap). Start mining in the UI (or add --mine).
+cargo run -- run --listen /ip4/0.0.0.0/tcp/8333 \
+  --bootstrap /dns4/digitalbritishpound.duckdns.org/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m
 ```
 
 All commands accept `--data-dir ./data` (default).
@@ -288,19 +296,23 @@ All commands accept `--data-dir ./data` (default).
 
 ## Run a network node
 
-**Independent miner** (default — DHT on, mDNS off, no founder IP):
+**Independent miner (sync first)** (default — DHT on, mDNS off, no founder IP):
 
 ```bash
-cargo run --release -- run --listen /ip4/0.0.0.0/tcp/8333 --mine --address dbc1YOURADDRESS
+cargo run --release -- run --listen /ip4/0.0.0.0/tcp/8333 \
+  --bootstrap /dns4/digitalbritishpound.duckdns.org/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m
 ```
+
+Then click **Start Miner** in the UI (or use `--mine --address ...` as a CLI fallback).
 
 **With community bootstrap** (replace with volunteer VPS multiaddr from forum):
 
 ```bash
 cargo run --release -- run --listen /ip4/0.0.0.0/tcp/8333 \
   --bootstrap /ip4/203.0.113.10/tcp/8333/p2p/12D3KooWCommunityPeerIdHere \
-  --mine --address dbc1YOURADDRESS
 ```
+
+Then click **Start Miner** in the UI (or add `--mine --address ...`).
 
 **LAN development only:**
 

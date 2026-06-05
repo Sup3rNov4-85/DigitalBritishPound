@@ -22,11 +22,11 @@ I’ve published an early reference full-node for **Digital British Coin (DBC)**
 **Quick start**
 1. `wallet-new` — save your 24 words offline  
 2. `run` with bootstrap from README — **do not run `init`**  
-3. Optional: `--mine --address dbc1...`
+3. Optional: start mining in the UI (set payout `dbc1...`)
 
 **Bootstrap**
 ```
-/ip4/176.24.48.191/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m
+/dns4/digitalbritishpound.duckdns.org/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m
 ```
 
 Early software — run at your own risk. Verify `SHA256SUMS.txt`. Never share your seed phrase.

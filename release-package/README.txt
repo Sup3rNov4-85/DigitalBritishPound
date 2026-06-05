@@ -4,16 +4,20 @@ Genesis hash (MUST match):
 87f9442d436c6627f00a4bc025e149d0c2fe30dc5f77eb2c18acd086ba582a7d
 
 Bootstrap seed (first node):
-/ip4/176.24.48.191/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m
+/dns4/digitalbritishpound.duckdns.org/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m
 
 Quick start (Windows PowerShell)
 1) Create a wallet (SAVE the 24 words; never share them):
    .\dbc-node.exe wallet-new
 
-2) Start node + mine (replace dbc1... with YOUR address from wallet-new):
+2) Start node (sync). Start mining in the UI:
    .\dbc-node.exe run --listen /ip4/0.0.0.0/tcp/8334 `
-     --bootstrap /ip4/176.24.48.191/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m `
-     --mine --address dbc1PASTE_YOUR_ADDRESS_HERE
+     --bootstrap /dns4/digitalbritishpound.duckdns.org/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m
+
+In the Windows UI:
+- set payout address to your `dbc1...`
+- click Start Miner
+- click Stop Miner to pause mining
 
 Wallet basics
 - Receive: share your dbc1... address.
