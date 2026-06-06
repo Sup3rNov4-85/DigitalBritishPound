@@ -36,10 +36,11 @@ they become spendable.
 
 ## Send coins
 
-1. Stop is not required for send if you have spendable balance.
+1. You need **spendable** balance (100-block maturity after mining rewards).
 2. Open **Send**, enter recipient `dbc1…`, amount, and your **24 words** (only for
    sending — never share them).
-3. Confirm **Send**.
+3. Click **Send** — if the node is running, the app briefly stops it to write the
+   transaction, then starts again.
 
 ## Recovery phrase — when you need it
 

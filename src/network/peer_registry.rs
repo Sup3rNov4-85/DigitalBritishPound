@@ -60,7 +60,7 @@ impl PeerRegistry {
 
     pub fn add_multiaddr_str(&mut self, addr: &str) -> bool {
         let addr = addr.trim();
-        if addr.is_empty() {
+        if addr.is_empty() || is_unusable_dial_addr(addr) {
             return false;
         }
         if self.entries.iter().any(|e| e.multiaddr == addr) {
@@ -73,24 +73,69 @@ impl PeerRegistry {
         true
     }
 
+    /// Merge remote pool entries — keep the oldest `added_unix` per address (first joiners stay first).
+    pub fn merge_peer_entries(&mut self, peers: &[PeerEntry]) -> usize {
+        let mut added = 0;
+        for p in peers {
+            if is_unusable_dial_addr(&p.multiaddr) {
+                continue;
+            }
+            if let Some(existing) = self
+                .entries
+                .iter_mut()
+                .find(|e| e.multiaddr == p.multiaddr)
+            {
+                if p.added_unix < existing.added_unix {
+                    existing.added_unix = p.added_unix;
+                }
+                continue;
+            }
+            self.entries.push(p.clone());
+            added += 1;
+        }
+        added
+    }
+
+    pub fn merge_peer_strings(&mut self, peers: &[String]) -> usize {
+        let entries: Vec<PeerEntry> = peers
+            .iter()
+            .filter(|s| !is_unusable_dial_addr(s))
+            .map(|s| PeerEntry {
+                multiaddr: s.clone(),
+                added_unix: now_unix(),
+            })
+            .collect();
+        self.merge_peer_entries(&entries)
+    }
+
     pub fn add_multiaddr(&mut self, addr: &Multiaddr) -> bool {
         self.add_multiaddr_str(&addr.to_string())
     }
 
-    /// Register this node on first run (or if missing from the list).
+    /// Register this node when we know a dialable public multiaddr (never 0.0.0.0 listen).
     pub fn ensure_self(&mut self, listen: &Multiaddr, peer_id: &PeerId) -> bool {
+        if is_unspec_listen(listen) {
+            return false;
+        }
         let with_peer = listen.clone().with_p2p(*peer_id).unwrap_or_else(|_| listen.clone());
         self.add_multiaddr(&with_peer)
     }
 
-    pub fn merge_peer_strings(&mut self, peers: &[String]) -> usize {
-        let mut added = 0;
-        for p in peers {
-            if self.add_multiaddr_str(p) {
-                added += 1;
-            }
-        }
-        added
+    /// Record a peer we successfully reached (grows the encrypted bootstrap pool).
+    pub fn record_reachable_peer(&mut self, addr: &Multiaddr) -> bool {
+        self.add_multiaddr(addr)
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn community_len(&self) -> usize {
+        self.entries.iter().filter(|e| !is_duckdns(&e.multiaddr)).count()
+    }
+
+    pub fn entries(&self) -> &[PeerEntry] {
+        &self.entries
     }
 
     /// Replace stale DuckDNS entries (e.g. old shipped `/p2p/` with wrong peer id).
@@ -107,32 +152,55 @@ impl PeerRegistry {
         self.entries.iter().map(|e| e.multiaddr.clone()).collect()
     }
 
-    /// Dial order: DuckDNS bootstrap first, then everything else oldest-first.
+    /// Dial order: community nodes oldest-first (first joiners in the pool), DuckDNS fallback last.
     pub fn dial_order(&self) -> Vec<Multiaddr> {
-        let mut duck = Vec::new();
-        let mut rest = Vec::new();
-        for e in &self.entries {
-            let Ok(addr) = e.multiaddr.parse::<Multiaddr>() else {
-                continue;
-            };
-            if is_duckdns(&e.multiaddr) {
-                duck.push(addr);
-            } else {
-                rest.push(addr);
+        let mut community: Vec<&PeerEntry> = self
+            .entries
+            .iter()
+            .filter(|e| !is_duckdns(&e.multiaddr) && !is_unusable_dial_addr(&e.multiaddr))
+            .collect();
+        community.sort_by_key(|e| e.added_unix);
+
+        let mut out = Vec::new();
+        for e in community {
+            if let Ok(addr) = e.multiaddr.parse::<Multiaddr>() {
+                out.push(addr);
             }
         }
-        if duck.is_empty() {
+
+        let has_duck = self.entries.iter().any(|e| is_duckdns(&e.multiaddr));
+        if has_duck {
             if let Ok(a) = DUCKDNS_BOOTSTRAP.parse() {
-                duck.push(a);
+                out.push(a);
+            }
+        } else if out.is_empty() {
+            if let Ok(a) = DUCKDNS_BOOTSTRAP.parse() {
+                out.push(a);
             }
         }
-        duck.extend(rest);
-        duck
+        out
     }
 }
 
 fn is_duckdns(s: &str) -> bool {
     s.contains("digitalbritishpound.duckdns.org")
+}
+
+fn is_unusable_dial_addr(s: &str) -> bool {
+    s.contains("/ip4/0.0.0.0/")
+        || s.contains("/ip4/127.0.0.1/")
+        || s.contains("/ip6/::/")
+        || s.contains("/ip6/::1/")
+}
+
+fn is_unspec_listen(addr: &Multiaddr) -> bool {
+    use libp2p::multiaddr::Protocol;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+    addr.iter().any(|p| match p {
+        Protocol::Ip4(ip) => ip == Ipv4Addr::UNSPECIFIED || ip == Ipv4Addr::LOCALHOST,
+        Protocol::Ip6(ip) => ip == Ipv6Addr::UNSPECIFIED || ip == Ipv6Addr::LOCALHOST,
+        _ => false,
+    })
 }
 
 fn registry_key() -> [u8; 32] {
@@ -183,10 +251,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn duckdns_first_in_dial_order() {
+    fn community_nodes_dial_before_duckdns_fallback() {
         let mut reg = PeerRegistry::default_bundled();
-        reg.add_multiaddr_str("/ip4/1.2.3.4/tcp/8333/p2p/12D3KooWExamplePeerIdExamplePeerIdExampl");
+        reg.add_multiaddr_str(
+            "/ip4/1.2.3.4/tcp/8333/p2p/12D3KooWH3VQcmaw7b9wEBYYjVDr6aovGgg75RkkBLyZZbFRbhxy",
+        );
         let order = reg.dial_order();
+        assert_eq!(order.len(), 2);
+        assert!(!is_duckdns(&order[0].to_string()));
+        assert!(is_duckdns(&order[1].to_string()));
+    }
+
+    #[test]
+    fn skips_unusable_listen_addresses() {
+        let mut reg = PeerRegistry::default();
+        assert!(!reg.add_multiaddr_str("/ip4/0.0.0.0/tcp/8333/p2p/12D3KooWExamplePeerIdExamplePeerIdExampl"));
+    }
+
+    #[test]
+    fn merge_keeps_oldest_timestamp() {
+        let mut reg = PeerRegistry::default();
+        reg.merge_peer_entries(&[PeerEntry {
+            multiaddr: "/ip4/1.1.1.1/tcp/8333/p2p/12D3KooWExamplePeerIdExamplePeerIdExampl".into(),
+            added_unix: 50,
+        }]);
+        reg.merge_peer_entries(&[PeerEntry {
+            multiaddr: "/ip4/1.1.1.1/tcp/8333/p2p/12D3KooWExamplePeerIdExamplePeerIdExampl".into(),
+            added_unix: 999,
+        }]);
+        assert_eq!(reg.entries[0].added_unix, 50);
+    }
+
+    #[test]
+    fn duckdns_fallback_when_pool_empty() {
+        let reg = PeerRegistry::default_bundled();
+        let order = reg.dial_order();
+        assert_eq!(order.len(), 1);
         assert!(is_duckdns(&order[0].to_string()));
     }
 

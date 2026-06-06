@@ -6,7 +6,7 @@ Rust full-node prototype aligned with the DBC whitepaper: CPU-oriented proof-of-
 
 ## Download & launch
 
-- **Windows installer:** [Google Drive](https://drive.google.com/file/d/1xR_TWSbgWVTAl4p-XscrfP6kz88jcyxT/view?usp=sharing)
+- **Windows installer:** [Google Drive](https://drive.google.com/file/d/151Oy8REpkWhEjHVG6qPafDDJH3v1-HDn/view?usp=sharing)
 - **Launch details (genesis, bootstrap, verify):** [docs/LAUNCH.md](docs/LAUNCH.md)
 - **Public whitepaper PDF:** [docs/DBC_Whitepaper_Public.pdf](docs/DBC_Whitepaper_Public.pdf)
 
@@ -59,17 +59,16 @@ If you just want to **run a node + mine**, follow this exactly.
 
 Copy the `dbc1...` address it prints (that is where mining rewards go).
 
-3) **Start node (sync). Start mining using the UI toggle (do NOT run `init`).**
+3) **Start node (sync). Start mining using the UI (do NOT run `init`).**
 
 ```powershell
-.\dbc-node.exe run --listen /ip4/0.0.0.0/tcp/8334 `
-  --bootstrap /dns4/digitalbritishpound.duckdns.org/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m
+.\dbc-node.exe run --listen /ip4/0.0.0.0/tcp/8333
 ```
 
-Open the DBC **Wallet/Miner UI** from the Windows installer:
+Open the DBC **Launcher** from the Windows installer:
 - Set your **payout address** to your `dbc1...`
-- Click **Start Miner**
-- Click **Stop Miner** to pause
+- Click **Start**
+- Click **Stop** to go offline
 
 If you do not have the UI installed, the CLI fallback is to add `--mine --address dbc1PASTE_YOUR_ADDRESS_HERE`.
 
@@ -83,11 +82,10 @@ Leave it running. You will see blocks sync from height 0 and then it will start 
 ./dbc-node wallet-new
 ```
 
-2) **Start node (sync). Start mining using the UI toggle (do NOT run `init`).**
+2) **Start node (sync). Start mining using the UI (do NOT run `init`).**
 
 ```bash
-./dbc-node run --listen /ip4/0.0.0.0/tcp/8334 \
-  --bootstrap /dns4/digitalbritishpound.duckdns.org/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m
+./dbc-node run --listen /ip4/0.0.0.0/tcp/8333
 ```
 
 If you do not have the UI available, the CLI fallback is to add `--mine --address dbc1PASTE_YOUR_ADDRESS_HERE`.
@@ -153,11 +151,11 @@ Important:
 
 ### Early miner bootstrap (first public node)
 
-Use this multiaddr to join the network and sync block 0:
+The shipped `peers.enc` includes DNS-only bootstrap (no stale `/p2p/` id):
 
-`/dns4/digitalbritishpound.duckdns.org/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m`
+`/dns4/digitalbritishpound.duckdns.org/tcp/8333`
 
-If you are behind a home router, the seed operator must port-forward **TCP 8333** to the machine running `dbc-node`.
+If you run a public seed, port-forward **TCP 8333** to the machine running `dbc-node`.
 
 ### What the founder should NOT do
 
@@ -197,11 +195,10 @@ cargo run --release -- export-genesis --out genesis.json
 # Verify genesis hash matches the forum post, then sync from peers.
 # IMPORTANT: do NOT run `init` (that would create a different chain).
 #
-# First node you know about (bootstrap) will serve block 0 over P2P.
-cargo run --release -- run --listen /ip4/0.0.0.0/tcp/8333 \
-  --bootstrap /dns4/digitalbritishpound.duckdns.org/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m
+# Default: shipped peers.enc + DuckDNS bootstrap (no extra flags needed)
+cargo run --release -- run --listen /ip4/0.0.0.0/tcp/8333
 
-# Optional: community multiaddrs (from forum, not founder home IP)
+# Optional: community multiaddrs (from forum)
 cargo run --release -- run --listen /ip4/0.0.0.0/tcp/8333 \
   --bootstrap /ip4/VPS.IP/tcp/8333/p2p/COMMUNITY_PEER_ID \
   --mine --address dbc1YOURADDRESS
@@ -255,9 +252,8 @@ cargo run -- mine --blocks 10 --address dbc1YOURADDRESS
 # 5. Chain status
 cargo run -- info
 
-# 6. Join network (sync from bootstrap). Start mining in the UI (or add --mine).
-cargo run -- run --listen /ip4/0.0.0.0/tcp/8333 \
-  --bootstrap /dns4/digitalbritishpound.duckdns.org/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m
+# 6. Join network (sync from peers.enc / DuckDNS). Start mining in the UI (or add --mine).
+cargo run -- run --listen /ip4/0.0.0.0/tcp/8333
 ```
 
 All commands accept `--data-dir ./data` (default).
@@ -298,11 +294,10 @@ All commands accept `--data-dir ./data` (default).
 **Independent miner (sync first)** (default — DHT on, mDNS off, no founder IP):
 
 ```bash
-cargo run --release -- run --listen /ip4/0.0.0.0/tcp/8333 \
-  --bootstrap /dns4/digitalbritishpound.duckdns.org/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m
+cargo run --release -- run --listen /ip4/0.0.0.0/tcp/8333
 ```
 
-Then click **Start Miner** in the UI (or use `--mine --address ...` as a CLI fallback).
+Then click **Start** in the Launcher (or use `--mine --address ...` as a CLI fallback).
 
 In the Windows package, the UI executable is `dbc-ui.exe`.
 
@@ -313,7 +308,7 @@ cargo run --release -- run --listen /ip4/0.0.0.0/tcp/8333 \
   --bootstrap /ip4/203.0.113.10/tcp/8333/p2p/12D3KooWCommunityPeerIdHere \
 ```
 
-Then click **Start Miner** in the UI (or add `--mine --address ...`).
+Then click **Start** in the Launcher (or add `--mine --address ...`).
 
 **LAN development only:**
 

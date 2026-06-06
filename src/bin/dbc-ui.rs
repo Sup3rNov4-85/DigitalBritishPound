@@ -87,7 +87,13 @@ impl NodeStatus {
             }
             return None;
         }
-        if line.contains("searching encrypted peer list") {
+        if line.contains("encrypted peer pool") {
+            if line.contains("merged") || line.contains("stored locally") {
+                self.network_line = "Peer pool updated — web growing".to_string();
+            }
+            return None;
+        }
+        if line.contains("searching encrypted peer pool") {
             if self.peer_count == 0 {
                 self.network_line = "Searching for network peers…".to_string();
             }
@@ -102,11 +108,7 @@ impl NodeStatus {
             };
             return None;
         }
-        if line.contains("merged") && line.contains("peer") {
-            self.network_line = "Connected — peer list updated".to_string();
-            return None;
-        }
-        if line.contains("P2P listening on") || line.contains("encrypted peer list:") {
+        if line.contains("P2P listening on") {
             if self.peer_count == 0 {
                 self.network_line = "Online — searching for peers…".to_string();
             }
@@ -138,8 +140,30 @@ impl NodeStatus {
                 format!("Working on block {h} (CPU mining — solo can take hours)…");
             return None;
         }
-        if line.contains("first run — added this node") {
-            self.network_line = "Registered on peer list".to_string();
+        if line.contains("solo mining block height=") {
+            if let Some(h) = parse_height_after(line, "solo mining block height=") {
+                self.mining_line =
+                    format!("Solo mining block {h} — no peers online (can take hours)…");
+            }
+            return None;
+        }
+        if line.contains("network mining block height=") {
+            if let Some(h) = parse_height_after(line, "network mining block height=") {
+                self.mining_line =
+                    format!("Network mining block {h} — fellow miners syncing (can take hours)…");
+            }
+            return None;
+        }
+        if line.contains("network sync — fellow miner online") {
+            self.mining_line = "Syncing — fellow miner working on the next block".to_string();
+            return None;
+        }
+        if line.contains("network lead — mining for fellow miners") {
+            self.mining_line = "Leading — mining for the network".to_string();
+            return None;
+        }
+        if line.contains("first run — joined the encrypted peer bootstrap pool") {
+            self.network_line = "Registered on peer pool".to_string();
         }
         None
     }
@@ -525,8 +549,30 @@ impl DbcUiApp {
                 self.chain_height = Some(h);
             }
             self.status.peer_count = snap.peer_count;
+            if snap.peer_pool_size > 0 && self.status.peer_count == 0 {
+                self.status.network_line = format!(
+                    "Online — {} node(s) in encrypted bootstrap pool",
+                    snap.peer_pool_size
+                );
+            }
             if snap.mining_enabled && self.status.mining_line == "Off" {
                 self.status.set_mining_ready();
+            }
+            match snap.mining_mode.as_str() {
+                "solo" if self.status.mining_line == "Off"
+                    || self.status.mining_line.contains("waiting") =>
+                {
+                    self.status.mining_line =
+                        "Solo mining — searching for peers first, then grinding if alone".to_string();
+                }
+                "sync" => {
+                    self.status.mining_line =
+                        "Syncing — fellow miner working on the next block".to_string();
+                }
+                "lead" if !self.status.mining_line.contains("Network mining") => {
+                    self.status.mining_line = "Leading — mining for the network".to_string();
+                }
+                _ => {}
             }
         }
     }
@@ -876,9 +922,7 @@ impl eframe::App for DbcUiApp {
                     .desired_rows(2)
                     .desired_width(f32::INFINITY),
             );
-            if ui
-                .add_enabled(!self.node_running(), egui::Button::new("Send"))
-                .clicked()
+            if ui.button("Send").clicked()
             {
                 let was_running = self.node_running();
                 if was_running {
@@ -901,7 +945,7 @@ impl eframe::App for DbcUiApp {
             if let Some(msg) = &self.send_message {
                 ui.monospace(msg);
             }
-            ui.label("Stop the node before sending if you see a database lock error.");
+            ui.label("Send briefly stops the node if it is running, then restarts it.");
 
             ui.separator();
 

@@ -6,7 +6,7 @@
 
 I’ve published an early reference full-node for **Digital British Coin (DBC)** — a proof-of-work UTXO chain (not a token), with a public genesis and no ICO/premine.
 
-**Download (Windows installer):** https://drive.google.com/file/d/1xR_TWSbgWVTAl4p-XscrfP6kz88jcyxT/view?usp=sharing
+**Download (Windows installer):** https://drive.google.com/file/d/151Oy8REpkWhEjHVG6qPafDDJH3v1-HDn/view?usp=sharing
 
 **Source + docs:** https://github.com/Sup3rNov4-85/DigitalBritishPound
 
@@ -24,9 +24,9 @@ I’ve published an early reference full-node for **Digital British Coin (DBC)**
 2. `run` with bootstrap from README — **do not run `init`**  
 3. Optional: start mining in the UI (set payout `dbc1...`)
 
-**Bootstrap**
+**Bootstrap (DNS-only — shipped in `peers.enc`):**
 ```
-/dns4/digitalbritishpound.duckdns.org/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m
+/dns4/digitalbritishpound.duckdns.org/tcp/8333
 ```
 
 Early software — run at your own risk. Verify `SHA256SUMS.txt`. Never share your seed phrase.

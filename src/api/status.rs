@@ -10,6 +10,12 @@ pub struct NodeStatusSnapshot {
     pub peer_count: u32,
     pub mining_enabled: bool,
     pub listening: bool,
+    /// Reachable nodes in encrypted peers.enc (community pool size).
+    #[serde(default)]
+    pub peer_pool_size: u32,
+    /// `off` | `solo` | `lead` | `sync` — how this node is helping the chain.
+    #[serde(default)]
+    pub mining_mode: String,
 }
 
 pub fn status_path(data_dir: &Path) -> PathBuf {

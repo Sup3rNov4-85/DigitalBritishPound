@@ -9,7 +9,13 @@ cargo build --release --bins
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host "Generating peers.enc..."
-cargo run --release --bin gen-peers-enc
+$releaseData = Join-Path $env:LOCALAPPDATA "DigitalBritishPound\DBC\data"
+if ($env:DBC_RELEASE_DATA_DIR) { $releaseData = $env:DBC_RELEASE_DATA_DIR }
+if (Test-Path (Join-Path $releaseData "peer_key")) {
+    cargo run --release --bin gen-peers-enc -- --data-dir $releaseData
+} else {
+    cargo run --release --bin gen-peers-enc
+}
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $Pkg = Join-Path $Root "release-package"

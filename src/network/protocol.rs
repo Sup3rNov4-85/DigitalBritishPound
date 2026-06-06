@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{Block, Transaction};
+use crate::network::peer_registry::PeerEntry;
 
 /// Gossip + request/response payloads (bincode-encoded).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -10,8 +11,8 @@ pub enum NetworkMessage {
     /// Request a block by height (for catch-up sync).
     GetBlock { height: u64 },
     BlockReply { height: u64, block: Option<Block> },
-    /// Encrypted peer registry sync — merge into local peers.enc.
-    PeerList { peers: Vec<String> },
+    /// Encrypted peer pool sync — merge into local peers.enc (timestamps preserve join order).
+    PeerList { peers: Vec<PeerEntry> },
 }
 
 pub const TOPIC_BLOCKS: &str = "dbc/blocks/v1";

@@ -23,7 +23,8 @@ use crate::{
         protocol::{decode, encode, NetworkMessage, TOPIC_BLOCKS, TOPIC_PEERS, TOPIC_SYNC, TOPIC_TXS},
         seeds::load_peers_file,
     },
-    node::{chain::Chain, miner::Miner},
+    node::{chain::Chain, miner::{Miner, MinerError}},
+    Block, Hash,
 };
 
 const GENESIS_MSG: &[u8] =
@@ -83,7 +84,7 @@ pub struct P2pConfig {
     pub peers_enc_path: PathBuf,
     /// Shipped `peers.enc` copied on first run (contains DuckDNS bootstrap).
     pub bundled_peers_enc: Option<PathBuf>,
-    /// When false (host/seed), do not dial out — others find you via the peer list.
+    /// When false (listen-only), do not dial out — others find you via the peer pool.
     pub dial_peers: bool,
     pub mine: bool,
     /// Optional file-based mining control. When set, the node will mine only when this file contains "1".
@@ -112,35 +113,23 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
     if registry.ensure_self(&cfg.listen, &local_peer_id) || is_new_key {
         registry.save_encrypted(&cfg.peers_enc_path)?;
         if is_new_key {
-            info!("first run — added this node to encrypted peers list");
+            info!("first run — joined the encrypted peer bootstrap pool");
         }
     }
+
+    info!(
+        "encrypted peer pool — {} bootstrap entries (community nodes dial first)",
+        registry.len()
+    );
 
     let blocks_topic = IdentTopic::new(TOPIC_BLOCKS);
     let txs_topic = IdentTopic::new(TOPIC_TXS);
     let sync_topic = IdentTopic::new(TOPIC_SYNC);
     let peers_topic = IdentTopic::new(TOPIC_PEERS);
 
-    let mut bootstrap = registry.dial_order();
-    for addr in &cfg.bootstrap {
-        let s = addr.to_string();
-        if bootstrap.iter().any(|b| b.to_string() == s) {
-            continue;
-        }
-        if s.contains("digitalbritishpound.duckdns.org") {
-            bootstrap.insert(0, addr.clone());
-        } else {
-            bootstrap.push(addr.clone());
-        }
-    }
-    if let Some(ref path) = cfg.peers_file {
-        for addr in load_peers_file(path)? {
-            let s = addr.to_string();
-            if !bootstrap.iter().any(|b| b.to_string() == s) {
-                bootstrap.push(addr);
-            }
-        }
-    }
+    let extra_bootstrap = cfg.bootstrap.clone();
+    let peers_file = cfg.peers_file.clone();
+    let mut bootstrap = build_dial_targets(&registry, &extra_bootstrap, peers_file.as_deref());
 
     let enable_mdns = cfg.enable_mdns;
     let enable_dht = cfg.enable_dht;
@@ -205,6 +194,10 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
     swarm.listen_on(cfg.listen.clone())?;
 
     if dial_peers {
+        info!(
+            "encrypted peer pool: {} dial target(s) — community nodes first, DNS fallback last",
+            bootstrap.len()
+        );
         dial_peer_list(&mut swarm, &bootstrap, "startup");
     } else {
         info!("listen-only — waiting for incoming peer connections");
@@ -223,10 +216,6 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
     if let Ok(Some(tip)) = chain.tip() {
         info!("chain tip height={}", tip.height);
     }
-    info!(
-        "encrypted peer list: {} entries (DuckDNS tried first)",
-        registry.peer_strings().len()
-    );
     if bootstrap.is_empty() && enable_dht && dial_peers {
         info!("no peers in list — waiting for DHT / gossip");
     }
@@ -287,6 +276,8 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
     let status_data_dir = data_dir.to_path_buf();
     let status_mine_ctl = cfg.mine_ctl_file.clone();
     let status_always_mine = cfg.mine;
+    let mut mining_task: Option<tokio::task::JoinHandle<Result<Block, MinerError>>> = None;
+    let mut initial_peer_search_done = !dial_peers;
 
     loop {
         tokio::select! {
@@ -297,7 +288,7 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
                         ..
                     })) => {
                         if let Ok(msg) = decode(&message.data) {
-                            handle_network_message(
+                            let accepted = handle_network_message(
                                 &mut swarm,
                                 &chain,
                                 &mut registry,
@@ -306,7 +297,11 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
                                 &sync_topic,
                                 &peers_topic,
                                 msg,
-                            ).await?;
+                            )
+                            .await?;
+                            if accepted {
+                                abort_mining_task(&mut mining_task);
+                            }
                         }
                     }
                     SwarmEvent::Behaviour(NodeEvent::Kad(kad::Event::RoutingUpdated { peer, .. })) => {
@@ -339,12 +334,22 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
                             .clone()
                             .with_p2p(peer_id)
                             .unwrap_or(remote);
-                        if registry.add_multiaddr(&with_peer) {
+                        if registry.record_reachable_peer(&with_peer) {
                             let _ = registry.save_encrypted(&peers_enc_path);
-                            info!("peer list updated ({})", registry.peer_strings().len());
+                            info!(
+                                "encrypted peer pool — {} reachable node(s) stored locally",
+                                registry.len()
+                            );
+                            kad_add_pool_addresses(&mut swarm, &registry);
                         }
                         publish_peer_list(&mut swarm, &registry, &peers_topic)?;
                         request_next_block(&mut swarm, &chain, &sync_topic)?;
+                        apply_cooperative_mining_role(
+                            &swarm,
+                            local_peer_id,
+                            mining_ctl_enabled(status_always_mine, &status_mine_ctl),
+                            &mut mining_task,
+                        );
                     }
                     _ => {}
                 }
@@ -353,6 +358,7 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
                 let _ = swarm.behaviour_mut().kad.bootstrap();
             }
             _ = peer_search.tick(), if dial_peers => {
+                initial_peer_search_done = true;
                 if swarm.connected_peers().next().is_some() {
                     peer_search_attempts = 0;
                     listen_only = false;
@@ -360,10 +366,20 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
                     peer_search_attempts = peer_search_attempts.saturating_add(1);
                     if peer_search_attempts % RECONNECT_WHILE_HOSTING == 0 {
                         info!("retrying peer search while hosting");
+                        bootstrap = build_dial_targets(
+                            &registry,
+                            &extra_bootstrap,
+                            peers_file.as_deref(),
+                        );
                         dial_peer_list(&mut swarm, &bootstrap, "background");
                     }
                 } else {
                     peer_search_attempts = peer_search_attempts.saturating_add(1);
+                    bootstrap = build_dial_targets(
+                        &registry,
+                        &extra_bootstrap,
+                        peers_file.as_deref(),
+                    );
                     dial_peer_list(&mut swarm, &bootstrap, "retry");
                     if peer_search_attempts >= SWITCH_TO_HOST_AFTER {
                         listen_only = true;
@@ -377,32 +393,205 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
             _ = status_tick.tick() => {
                 let peer_count = swarm.connected_peers().count() as u32;
                 let tip_height = chain.tip().ok().flatten().map(|t| t.height);
-                let mining_enabled = if status_always_mine {
-                    true
-                } else if let Some(ref p) = status_mine_ctl {
-                    fs::read_to_string(p).map(|s| s.trim() == "1").unwrap_or(false)
-                } else {
-                    false
-                };
+                let mining_enabled = mining_ctl_enabled(status_always_mine, &status_mine_ctl);
+                let policy = mining_policy(&swarm, local_peer_id, mining_enabled);
                 let _ = write_status(
                     &status_data_dir,
                     &NodeStatusSnapshot {
                         tip_height,
                         peer_count,
+                        peer_pool_size: registry.len() as u32,
                         mining_enabled,
                         listening: true,
+                        mining_mode: policy.status_mode().to_string(),
                     },
                 );
             }
-            Some(()) = mine_rx.recv() => {
-                if let Some(payout) = cfg.payout {
-                    if let Err(e) = try_mine_and_publish(&mut swarm, &chain, payout, &blocks_topic).await {
-                        warn!("mine failed: {e}");
+            Some(()) = mine_rx.recv(), if mining_task.is_none() && cfg.payout.is_some() => {
+                let mining_enabled = mining_ctl_enabled(status_always_mine, &status_mine_ctl);
+                let policy = mining_policy(&swarm, local_peer_id, mining_enabled);
+                if policy.should_mine()
+                    && (!matches!(policy, MiningPolicy::Solo) || initial_peer_search_done)
+                {
+                    if let Some(payout) = cfg.payout {
+                        match prepare_mine_job(&chain, payout) {
+                            Ok(job) => {
+                                info!("{}", policy.mining_log_line(job.height));
+                                mining_task = Some(tokio::task::spawn_blocking(move || {
+                                    Miner::mine_next_block(
+                                        job.prev_hash,
+                                        job.height,
+                                        job.difficulty,
+                                        job.payout,
+                                        GENESIS_MSG,
+                                        job.txs,
+                                        job.fees,
+                                        job.uncles,
+                                    )
+                                }));
+                            }
+                            Err(e) => warn!("mine prep failed: {e}"),
+                        }
                     }
+                } else if matches!(policy, MiningPolicy::NetworkSync) {
+                    let _ = request_next_block(&mut swarm, &chain, &sync_topic);
+                }
+            }
+            mine_result = async {
+                if let Some(h) = mining_task.as_mut() {
+                    h.await
+                } else {
+                    std::future::pending().await
+                }
+            }, if mining_task.is_some() => {
+                mining_task = None;
+                match mine_result {
+                    Ok(Ok(block)) => {
+                        if let Err(e) =
+                            finish_mined_block(&mut swarm, &chain, block, &blocks_topic).await
+                        {
+                            warn!("mine publish failed: {e}");
+                        }
+                    }
+                    Ok(Err(e)) => warn!("mine failed: {e}"),
+                    Err(e) => warn!("mine task panicked: {e}"),
                 }
             }
         }
     }
+}
+
+struct MineJob {
+    prev_hash: Hash,
+    height: u64,
+    difficulty: u32,
+    payout: Address,
+    txs: Vec<crate::Transaction>,
+    fees: u64,
+    uncles: Vec<crate::BlockHeader>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MiningPolicy {
+    Off,
+    Solo,
+    NetworkLead,
+    NetworkSync,
+}
+
+impl MiningPolicy {
+    fn should_mine(self) -> bool {
+        matches!(self, MiningPolicy::Solo | MiningPolicy::NetworkLead)
+    }
+
+    fn status_mode(self) -> &'static str {
+        match self {
+            MiningPolicy::Off => "off",
+            MiningPolicy::Solo => "solo",
+            MiningPolicy::NetworkLead => "lead",
+            MiningPolicy::NetworkSync => "sync",
+        }
+    }
+
+    fn mining_log_line(self, height: u64) -> String {
+        match self {
+            MiningPolicy::Solo => format!(
+                "solo mining block height={height} (no peers — can take hours)…"
+            ),
+            MiningPolicy::NetworkLead => format!(
+                "network mining block height={height} for fellow miners (can take hours)…"
+            ),
+            MiningPolicy::Off | MiningPolicy::NetworkSync => String::new(),
+        }
+    }
+}
+
+fn mining_ctl_enabled(always_mine: bool, mine_ctl_file: &Option<PathBuf>) -> bool {
+    if always_mine {
+        return true;
+    }
+    if let Some(p) = mine_ctl_file {
+        return fs::read_to_string(p)
+            .map(|s| s.trim() == "1")
+            .unwrap_or(false);
+    }
+    false
+}
+
+fn is_designated_miner(swarm: &libp2p::Swarm<NodeBehaviour>, local: PeerId) -> bool {
+    let mut ids: Vec<PeerId> = swarm.connected_peers().copied().collect();
+    ids.push(local);
+    ids.sort();
+    ids.first() == Some(&local)
+}
+
+fn mining_policy(
+    swarm: &libp2p::Swarm<NodeBehaviour>,
+    local: PeerId,
+    ctl_enabled: bool,
+) -> MiningPolicy {
+    if !ctl_enabled {
+        return MiningPolicy::Off;
+    }
+    if swarm.connected_peers().next().is_none() {
+        MiningPolicy::Solo
+    } else if is_designated_miner(swarm, local) {
+        MiningPolicy::NetworkLead
+    } else {
+        MiningPolicy::NetworkSync
+    }
+}
+
+fn abort_mining_task(task: &mut Option<tokio::task::JoinHandle<Result<Block, MinerError>>>) {
+    if let Some(handle) = task.take() {
+        handle.abort();
+    }
+}
+
+fn apply_cooperative_mining_role(
+    swarm: &libp2p::Swarm<NodeBehaviour>,
+    local: PeerId,
+    ctl_enabled: bool,
+    mining_task: &mut Option<tokio::task::JoinHandle<Result<Block, MinerError>>>,
+) {
+    let policy = mining_policy(swarm, local, ctl_enabled);
+    match policy {
+        MiningPolicy::NetworkSync => {
+            abort_mining_task(mining_task);
+            info!("network sync — fellow miner online, syncing blocks (not solo mining)");
+        }
+        MiningPolicy::NetworkLead => {
+            info!("network lead — mining for fellow miners while they sync");
+        }
+        MiningPolicy::Solo | MiningPolicy::Off => {}
+    }
+}
+
+fn prepare_mine_job(chain: &Chain, payout: Address) -> anyhow::Result<MineJob> {
+    Ok(MineJob {
+        prev_hash: chain.tip()?.map(|t| t.hash).unwrap_or(Hash::ZERO),
+        height: chain.tip()?.map(|t| t.height + 1).unwrap_or(0),
+        difficulty: chain.difficulty_for_next_block()?,
+        txs: chain.mempool_snapshot(),
+        fees: chain.mempool_fees()?,
+        uncles: chain.select_uncles()?,
+        payout,
+    })
+}
+
+async fn finish_mined_block(
+    swarm: &mut libp2p::Swarm<NodeBehaviour>,
+    chain: &Chain,
+    block: Block,
+    blocks_topic: &IdentTopic,
+) -> anyhow::Result<()> {
+    let height = block.header.height;
+    if let Some(hash) = chain.accept_block(&block)? {
+        info!("mined block height={height} hash={}", hash.to_hex());
+        publish(swarm, blocks_topic, &NetworkMessage::Block(block))?;
+        request_next_block(swarm, chain, &IdentTopic::new(TOPIC_SYNC))?;
+    }
+    Ok(())
 }
 
 fn peer_id_from_multiaddr(addr: &Multiaddr) -> Option<PeerId> {
@@ -425,7 +614,8 @@ async fn handle_network_message(
     sync_topic: &IdentTopic,
     peers_topic: &IdentTopic,
     msg: NetworkMessage,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
+    let mut accepted_new = false;
     match msg {
         NetworkMessage::Block(block) => {
             match chain.accept_block(&block) {
@@ -436,6 +626,7 @@ async fn handle_network_message(
                         hash.to_hex()
                     );
                     request_next_block(swarm, chain, sync_topic)?;
+                    accepted_new = true;
                 }
                 Ok(None) => {}
                 Err(e) => warn!("rejected block: {e}"),
@@ -455,18 +646,23 @@ async fn handle_network_message(
                 if chain.accept_block(&block)?.is_some() {
                     info!("synced block height={height}");
                     request_next_block(swarm, chain, sync_topic)?;
+                    accepted_new = true;
                 }
             }
         }
         NetworkMessage::PeerList { peers } => {
-            let added = registry.merge_peer_strings(&peers);
+            let added = registry.merge_peer_entries(&peers);
             if added > 0 {
                 registry.save_encrypted(peers_enc_path)?;
-                info!("merged {added} peer(s) from network — list now has {}", registry.peer_strings().len());
-                for p in peers {
-                    if let Ok(addr) = p.parse::<Multiaddr>() {
+                info!(
+                    "encrypted peer pool merged — {} reachable node(s) in bootstrap pool",
+                    registry.len()
+                );
+                kad_add_pool_addresses(swarm, registry);
+                for entry in peers {
+                    if let Ok(addr) = entry.multiaddr.parse::<Multiaddr>() {
                         if let Err(e) = swarm.dial(addr) {
-                            warn!("dial {p} failed: {e}");
+                            warn!("dial {} failed: {e}", entry.multiaddr);
                         }
                     }
                 }
@@ -475,7 +671,7 @@ async fn handle_network_message(
         }
     }
     let _ = blocks_topic;
-    Ok(())
+    Ok(accepted_new)
 }
 
 fn dial_peer_list(
@@ -483,7 +679,10 @@ fn dial_peer_list(
     addrs: &[Multiaddr],
     reason: &str,
 ) {
-    info!("searching encrypted peer list ({reason}) — DuckDNS first, {} entries", addrs.len());
+    info!(
+        "searching encrypted peer pool ({reason}) — {} dial target(s)",
+        addrs.len()
+    );
     for addr in addrs {
         if let Err(e) = swarm.dial(addr.clone()) {
             warn!("dial {addr} failed: {e}");
@@ -497,9 +696,47 @@ fn publish_peer_list(
     peers_topic: &IdentTopic,
 ) -> anyhow::Result<()> {
     let msg = NetworkMessage::PeerList {
-        peers: registry.peer_strings(),
+        peers: registry.entries().to_vec(),
     };
     publish(swarm, peers_topic, &msg)
+}
+
+fn build_dial_targets(
+    registry: &PeerRegistry,
+    extra_bootstrap: &[Multiaddr],
+    peers_file: Option<&Path>,
+) -> Vec<Multiaddr> {
+    let mut out = registry.dial_order();
+    for addr in extra_bootstrap {
+        let s = addr.to_string();
+        if out.iter().any(|b| b.to_string() == s) {
+            continue;
+        }
+        out.push(addr.clone());
+    }
+    if let Some(path) = peers_file {
+        if let Ok(from_file) = load_peers_file(path) {
+            for addr in from_file {
+                let s = addr.to_string();
+                if !out.iter().any(|b| b.to_string() == s) {
+                    out.push(addr);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn kad_add_pool_addresses(
+    swarm: &mut libp2p::Swarm<NodeBehaviour>,
+    registry: &PeerRegistry,
+) {
+    for addr in registry.dial_order() {
+        if let Some(peer) = peer_id_from_multiaddr(&addr) {
+            let dial_addr = addr.clone().with_p2p(peer).unwrap_or_else(|_| addr.clone());
+            swarm.behaviour_mut().kad.add_address(&peer, dial_addr);
+        }
+    }
 }
 
 fn request_next_block(
@@ -510,39 +747,6 @@ fn request_next_block(
     let next = chain.tip()?.map(|t| t.height + 1).unwrap_or(0);
     let msg = NetworkMessage::GetBlock { height: next };
     publish(swarm, sync_topic, &msg)
-}
-
-async fn try_mine_and_publish(
-    swarm: &mut libp2p::Swarm<NodeBehaviour>,
-    chain: &Chain,
-    payout: Address,
-    blocks_topic: &IdentTopic,
-) -> anyhow::Result<()> {
-    let prev_hash = chain.tip()?.map(|t| t.hash).unwrap_or(crate::Hash::ZERO);
-    let height = chain.tip()?.map(|t| t.height + 1).unwrap_or(0);
-    let difficulty = chain.difficulty_for_next_block()?;
-    let txs = chain.mempool_snapshot();
-    let fees = chain.mempool_fees()?;
-    let uncles = chain.select_uncles()?;
-
-    info!("mining block height={height} (BritishWork PoW — solo can take hours)…");
-    let block = Miner::mine_next_block(
-        prev_hash,
-        height,
-        difficulty,
-        payout,
-        GENESIS_MSG,
-        txs,
-        fees,
-        uncles,
-    )?;
-
-    if let Some(hash) = chain.accept_block(&block)? {
-        info!("mined block height={height} hash={}", hash.to_hex());
-        publish(swarm, blocks_topic, &NetworkMessage::Block(block))?;
-        request_next_block(swarm, chain, &IdentTopic::new(TOPIC_SYNC))?;
-    }
-    Ok(())
 }
 
 fn publish(

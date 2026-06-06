@@ -39,7 +39,7 @@ peer connections.
 
 ## How do I verify the download?
 
-Download from [Google Drive](https://drive.google.com/file/d/1xR_TWSbgWVTAl4p-XscrfP6kz88jcyxT/view?usp=sharing) and compare file hashes to `SHA256SUMS.txt` in the release package.
+Download from [Google Drive](https://drive.google.com/file/d/151Oy8REpkWhEjHVG6qPafDDJH3v1-HDn/view?usp=sharing) and compare file hashes to `SHA256SUMS.txt` in the release package.
 
 ## What is the official genesis hash?
 

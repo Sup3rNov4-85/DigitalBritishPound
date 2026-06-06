@@ -2,7 +2,7 @@
 
 ## Download (Windows)
 
-**Official release:** [Google Drive — dbc-installer.exe](https://drive.google.com/file/d/1xR_TWSbgWVTAl4p-XscrfP6kz88jcyxT/view?usp=sharing)
+**Official release:** [Google Drive — dbc-installer.exe](https://drive.google.com/file/d/151Oy8REpkWhEjHVG6qPafDDJH3v1-HDn/view?usp=sharing)
 
 Or build `dbc-installer.exe` from this repository with `scripts/build_release.ps1`.
 

@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased (post-1.0.0 audit)
+
+### Network
+- Cooperative mining: solo when alone; lowest peer id mines when peers connected
+- Encrypted peer pool grows from successful dials; community nodes dial oldest-first, DuckDNS last
+- Mining on `spawn_blocking` so P2P accept loop is not blocked
+- DuckDNS bootstrap stored DNS-only (stale `/p2p/` ids stripped on startup)
+- `mine_ctl.txt` no longer overwritten by node when UI sets mining on
+
+### UI
+- Start/Stop in top bar; Send works while online (brief stop/restart)
+- Status from `status.json`: `peer_pool_size`, `mining_mode`
+
+### Docs
+- USER_GUIDE, README, REDDIT aligned with DNS-only bootstrap and Launcher flow
+
 ## 1.0.0 — 2026-06-05
 
 ### Product (Windows app)
