@@ -6,7 +6,7 @@
 
 I’ve published an early reference full-node for **Digital British Coin (DBC)** — a proof-of-work UTXO chain (not a token), with a public genesis and no ICO/premine.
 
-**Download (Windows zip):** https://drive.google.com/file/d/1nLbqnzqZ2hiZ7s8aJc-RqDwLrwctp-X_/view?usp=sharing
+**Download (Windows installer):** https://drive.google.com/file/d/1xR_TWSbgWVTAl4p-XscrfP6kz88jcyxT/view?usp=sharing
 
 **Source + docs:** https://github.com/Sup3rNov4-85/DigitalBritishPound
 

@@ -1,52 +1,45 @@
 # DBC launch information
 
-## Download (Windows package)
+## Download (Windows)
 
-**Official release zip:** [Google Drive](https://drive.google.com/file/d/1nLbqnzqZ2hiZ7s8aJc-RqDwLrwctp-X_/view?usp=sharing)
+**Official release:** [Google Drive — dbc-installer.exe](https://drive.google.com/file/d/1xR_TWSbgWVTAl4p-XscrfP6kz88jcyxT/view?usp=sharing)
 
-Contents: `dbc-installer.exe`, `dbc-ui.exe`, `dbc-node.exe`, `genesis.json`, `README.txt`, `DBC_Node_README.pdf`, `SHA256SUMS.txt`
+Or build `dbc-installer.exe` from this repository with `scripts/build_release.ps1`.
 
 Verify file hashes with `SHA256SUMS.txt` after download.
 
-### Windows installer (recommended)
-1) Download and run `dbc-installer.exe` (built from `installer/dbc-installer.nsi`).
-2) Use the Start Menu shortcut `Digital British Coin (DBC) -> DBC Launcher`.
-3) In the UI: set your payout address (`dbc1...`), click **Start Node**, then **Start Miner**.
+### Install
+1. Run `dbc-installer.exe` (user folder — no admin required).
+2. Open **Digital British Coin (DBC) → DBC Launcher**.
+3. Create wallet → **Start**.
+
+Every user follows the same steps. There is no special “first user” mode.
 
 ## Official genesis
 
 - **Genesis hash:** `87f9442d436c6627f00a4bc025e149d0c2fe30dc5f77eb2c18acd086ba582a7d`
-- **Do not run `init`** unless you intend to create a different chain.
+- **Do not run `init`** — the app imports `genesis.json` automatically.
 
-## Join the network (bootstrap)
+## Network
 
-```
-/dns4/digitalbritishpound.duckdns.org/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m
-```
+Nodes discover peers via encrypted `peers.enc` (shipped with the installer), Kademlia DHT, and merged peer lists over P2P.
 
-## Quick start (Windows)
+Bootstrap uses DNS + port only: `/dns4/digitalbritishpound.duckdns.org/tcp/8333`
 
-```powershell
-.\dbc-node.exe wallet-new
-.\dbc-node.exe run --listen /ip4/0.0.0.0/tcp/8334 `
-  --bootstrap /dns4/digitalbritishpound.duckdns.org/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m
-```
-
-### Start mining / stop mining (via UI)
-
-Once the node is running, use the Windows UI to:
-- set your **payout address** (`dbc1...`)
-- click **Start Miner**
-- click **Stop Miner** to pause mining
-
-## Whitepaper
-
-See `docs/DBC_Whitepaper_Public.pdf` in this repository.
+Community volunteers may run additional public seeds (VPS) and share multiaddrs — optional, not required for v1.
 
 ## Build from source
 
-```bash
-cargo build --release
+```powershell
+.\scripts\build_release.ps1
 ```
 
-BritishWork PoW memory is fixed at **2048 MiB** in release builds (consensus).
+## Documents
+
+| Doc | Audience |
+|-----|----------|
+| [USER_GUIDE.md](USER_GUIDE.md) | App users |
+| [FAQ.md](FAQ.md) | App users |
+| [PRODUCT.md](PRODUCT.md) | Product spec |
+| [DBC_Whitepaper_Public.pdf](DBC_Whitepaper_Public.pdf) | Protocol |
+| [../README.md](../README.md) | Developers / CLI |

@@ -1415,7 +1415,7 @@ dependencies = [
 
 [[package]]
 name = "dbc-node"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "bech32",
@@ -1423,6 +1423,7 @@ dependencies = [
  "bip32",
  "bip39",
  "blake3",
+ "chacha20poly1305",
  "clap",
  "eframe",
  "futures",
@@ -1436,6 +1437,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "sha3",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

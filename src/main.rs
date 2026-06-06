@@ -10,7 +10,7 @@ use dbc_node::{
     network::{run_p2p, P2pConfig},
     node::{
         chain::Chain,
-        genesis::{export_genesis_json, mine_genesis, GENESIS_MESSAGE},
+        genesis::{export_genesis_json, import_genesis_json, mine_genesis, GENESIS_MESSAGE},
         miner::Miner,
         validation::{build_p2addr_script_pubkey, build_script_sig, sighash},
     },
@@ -48,6 +48,11 @@ enum Command {
         #[arg(long, default_value = "genesis.json")]
         out: PathBuf,
     },
+    /// Import the published genesis block (height 0) if the local chain is empty.
+    ImportGenesis {
+        #[arg(long, default_value = "genesis.json")]
+        genesis: PathBuf,
+    },
     /// Print libp2p peer id from `data/peer_key` (community seeds only — skip if staying anonymous).
     PeerId,
     Run {
@@ -71,6 +76,17 @@ enum Command {
         /// LAN mDNS (off by default — do not use on home networks for anonymous launch).
         #[arg(long)]
         mdns: bool,
+        /// Shipped encrypted peer list (default: peers.enc next to cwd).
+        #[arg(long)]
+        bundled_peers: Option<PathBuf>,
+        /// Advanced: listen only, do not dial peers (not used by the Windows app).
+        #[arg(long)]
+        host_only: bool,
+    },
+    /// Localhost read-only HTTP API (GET /status, /balance). Stop the node first.
+    Serve {
+        #[arg(long, default_value = "127.0.0.1:8334")]
+        listen: String,
     },
     Mine {
         #[arg(long, default_value_t = 1)]
@@ -79,14 +95,23 @@ enum Command {
         address: Option<String>,
     },
     Send {
-        #[arg(long)]
-        from_mnemonic: String,
+        #[arg(long, required_unless_present = "from_mnemonic_file")]
+        from_mnemonic: Option<String>,
+        #[arg(long, required_unless_present = "from_mnemonic")]
+        from_mnemonic_file: Option<PathBuf>,
         #[arg(long)]
         to: String,
         #[arg(long)]
         amount_dbc: u64,
         #[arg(long, default_value_t = 0)]
         fee_dbc: u64,
+    },
+    /// Recent credits to an address (coinbase + received outputs).
+    History {
+        #[arg(long)]
+        address: String,
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
     },
     /// Show confirmed balance for an address from the local UTXO set.
     Balance {
@@ -152,6 +177,17 @@ async fn main() -> anyhow::Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("no genesis — run `init` first"))?;
             export_genesis_json(&block, &out).map_err(anyhow::Error::msg)?;
         }
+        Command::ImportGenesis { genesis } => {
+            if chain.tip()?.is_some() {
+                println!("chain already has blocks — import skipped");
+            } else {
+                let block = import_genesis_json(&genesis).map_err(anyhow::Error::msg)?;
+                let hash = chain
+                    .accept_block(&block)?
+                    .ok_or_else(|| anyhow::anyhow!("genesis already stored"))?;
+                println!("imported genesis height=0 hash={}", hash.to_hex());
+            }
+        }
         Command::PeerId => {
             let key_path = cli.data_dir.join("peer_key");
             if !key_path.exists() {
@@ -170,11 +206,18 @@ async fn main() -> anyhow::Result<()> {
             address,
             no_dht,
             mdns,
+            bundled_peers,
+            host_only,
         } => {
-            // If mining is controlled via a file (UI toggle), we still need a payout address
-            // so mining attempts can produce blocks.
-            let payout = if mine || mine_ctl_file.is_some() {
+            // If mining is controlled via a file (UI toggle), payout is optional at startup.
+            let payout = if mine {
                 Some(resolve_payout(address)?)
+            } else if let Some(ref a) = address {
+                if a.trim().is_empty() {
+                    None
+                } else {
+                    Some(Address::from_bech32m(a)?)
+                }
             } else {
                 None
             };
@@ -192,6 +235,9 @@ async fn main() -> anyhow::Result<()> {
                     listen,
                     bootstrap: bootstrap?,
                     peers_file: peers_path,
+                    peers_enc_path: cli.data_dir.join("peers.enc"),
+                    bundled_peers_enc: bundled_peers,
+                    dial_peers: !host_only,
                     mine,
                     mine_ctl_file,
                     payout,
@@ -232,83 +278,40 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Send {
             from_mnemonic,
+            from_mnemonic_file,
             to,
             amount_dbc,
             fee_dbc,
         } => {
-            anyhow::ensure!(chain.tip()?.is_some(), "run `init` first");
-            let from_m = bip39::Mnemonic::parse(from_mnemonic)?;
-            let from_w = Wallet::from_mnemonic(&from_m)?;
-            let to_addr = Address::from_bech32m(&to)?;
-
-            let amount = amount_dbc * dbc_node::consensus::UNITS_PER_DBC;
-            let fee = fee_dbc * dbc_node::consensus::UNITS_PER_DBC;
-            let need = amount + fee;
-            let current_height = chain.tip()?.map(|t| t.height).unwrap_or(0);
-
-            let mut selected: Vec<(OutPoint, dbc_node::types::utxo::Utxo)> = Vec::new();
-            let mut total = 0u64;
-            chain.utxos().for_each(|op, utxo| {
-                if utxo.output.script_pubkey.as_bytes().len() == 21
-                    && utxo.output.script_pubkey.as_bytes()[0] == 0x14
-                    && &utxo.output.script_pubkey.as_bytes()[1..21] == from_w.address().as_bytes()
-                    && utxo.is_mature(current_height)
-                {
-                    selected.push((op, utxo.clone()));
-                    total = total.saturating_add(utxo.value());
-                    if total >= need {
-                        return Ok(());
-                    }
-                }
-                Ok(())
-            })?;
-            anyhow::ensure!(total >= need, "insufficient funds: have={total} need={need}");
-
-            let mut inputs = Vec::new();
-            for (op, _) in &selected {
-                inputs.push(TxInput::new(op.clone(), Script::new(vec![]), u32::MAX));
-            }
-            let mut outputs = vec![TxOutput::new(amount, build_p2addr_script_pubkey(to_addr))];
-            let change = total - need;
-            if change > 0 {
-                outputs.push(TxOutput::new(
-                    change,
-                    build_p2addr_script_pubkey(from_w.address()),
-                ));
-            }
-            let mut tx = Transaction {
-                version: 1,
-                inputs,
-                outputs,
-                locktime: 0,
+            let mnemonic = if let Some(m) = from_mnemonic {
+                m
+            } else if let Some(path) = from_mnemonic_file {
+                let m = std::fs::read_to_string(&path)?;
+                let _ = std::fs::remove_file(&path);
+                m
+            } else {
+                anyhow::bail!("provide --from-mnemonic or --from-mnemonic-file");
             };
-            let pubkey32 = from_w.pubkey32();
-            for i in 0..tx.inputs.len() {
-                let msg32 = sighash(&tx, i)?;
-                let sig = from_w.sign(&msg32);
-                tx.inputs[i].script_sig = build_script_sig(&sig, pubkey32);
+            run_send(&chain, &mnemonic, &to, amount_dbc, fee_dbc)?;
+        }
+        Command::History { address, limit } => {
+            anyhow::ensure!(chain.tip()?.is_some(), "chain is empty");
+            let addr = Address::from_bech32m(&address)?;
+            let entries = dbc_node::node::wallet_query::history_for_address(&chain, &addr, limit)?;
+            if entries.is_empty() {
+                println!("no history for {}", addr.to_bech32m()?);
+            } else {
+                for e in entries {
+                    println!(
+                        "height={} kind={} amount={} DBC",
+                        e.height, e.kind, e.amount_dbc
+                    );
+                }
             }
-            chain.add_mempool_tx(tx)?;
-
-            let prev_hash = chain.tip()?.map(|t| t.hash).unwrap_or(Hash::ZERO);
-            let height = chain.tip()?.map(|t| t.height + 1).unwrap_or(0);
-            let difficulty = chain.difficulty_for_next_block()?;
-            let fees = chain.mempool_fees()?;
-            let uncles = chain.select_uncles()?;
-            let block = Miner::mine_next_block(
-                prev_hash,
-                height,
-                difficulty,
-                from_w.address(),
-                GENESIS_MESSAGE.as_bytes(),
-                chain.mempool_snapshot(),
-                fees,
-                uncles,
-            )?;
-            let hash = chain
-                .accept_block(&block)?
-                .expect("mined block must be accepted");
-            println!("mined payment in height={} hash={}", height, hash.to_hex());
+        }
+        Command::Serve { listen } => {
+            let bind: std::net::SocketAddr = listen.parse()?;
+            dbc_node::api::http::serve_local(bind, cli.data_dir.clone(), chain).await?;
         }
         Command::Balance {
             address,
@@ -316,51 +319,12 @@ async fn main() -> anyhow::Result<()> {
         } => {
             anyhow::ensure!(chain.tip()?.is_some(), "chain is empty — sync from a peer first");
             let addr = Address::from_bech32m(&address)?;
-            let current_height = chain.tip()?.map(|t| t.height).unwrap_or(0);
-
-            let mut total = 0u64;
-            let mut spendable = 0u64;
-            chain.utxos().for_each(|_op, utxo| {
-                if utxo.output.script_pubkey.as_bytes().len() == 21
-                    && utxo.output.script_pubkey.as_bytes()[0] == 0x14
-                    && &utxo.output.script_pubkey.as_bytes()[1..21] == addr.as_bytes()
-                {
-                    total = total.saturating_add(utxo.value());
-                    if utxo.is_mature(current_height) {
-                        spendable = spendable.saturating_add(utxo.value());
-                    }
-                }
-                Ok(())
-            })?;
-
-            let units_per = dbc_node::consensus::UNITS_PER_DBC;
-            let shown = if include_immature { total } else { spendable };
-            println!("address: {}", addr.to_bech32m()?);
+            let summary =
+                dbc_node::node::wallet_query::balance_for_address(&chain, &addr, include_immature)?;
             println!(
-                "confirmed: {} pence ({}.{:08} DBC)",
-                total,
-                total / units_per,
-                total % units_per
+                "{}",
+                dbc_node::node::wallet_query::format_balance_display(&summary, include_immature)
             );
-            println!(
-                "spendable: {} pence ({}.{:08} DBC){}",
-                spendable,
-                spendable / units_per,
-                spendable % units_per,
-                if include_immature {
-                    ""
-                } else {
-                    "  (coinbase needs 100 blocks to mature)"
-                }
-            );
-            if include_immature {
-                println!(
-                    "shown: {} pence ({}.{:08} DBC)  (--include-immature)",
-                    shown,
-                    shown / units_per,
-                    shown % units_per
-                );
-            }
         }
         Command::Info => match chain.tip()? {
             Some(tip) => {
@@ -376,7 +340,7 @@ async fn main() -> anyhow::Result<()> {
                     dbc_node::crypto::british_work::memory_bytes() / (1024 * 1024)
                 );
             }
-            None => println!("chain is empty — run `init` first"),
+            None => println!("chain is empty — run `import-genesis` or sync from a peer"),
         },
     }
 
@@ -399,4 +363,87 @@ fn now_secs() -> u32 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs() as u32
+}
+
+fn run_send(
+    chain: &Chain,
+    from_mnemonic: &str,
+    to: &str,
+    amount_dbc: u64,
+    fee_dbc: u64,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(chain.tip()?.is_some(), "chain is empty — sync first");
+    let from_m = bip39::Mnemonic::parse(from_mnemonic)?;
+    let from_w = Wallet::from_mnemonic(&from_m)?;
+    let to_addr = Address::from_bech32m(to)?;
+
+    let amount = amount_dbc * dbc_node::consensus::UNITS_PER_DBC;
+    let fee = fee_dbc * dbc_node::consensus::UNITS_PER_DBC;
+    let need = amount + fee;
+    let current_height = chain.tip()?.map(|t| t.height).unwrap_or(0);
+
+    let mut selected: Vec<(OutPoint, dbc_node::types::utxo::Utxo)> = Vec::new();
+    let mut total = 0u64;
+    chain.utxos().for_each(|op, utxo| {
+        if utxo.output.script_pubkey.as_bytes().len() == 21
+            && utxo.output.script_pubkey.as_bytes()[0] == 0x14
+            && &utxo.output.script_pubkey.as_bytes()[1..21] == from_w.address().as_bytes()
+            && utxo.is_mature(current_height)
+        {
+            selected.push((op, utxo.clone()));
+            total = total.saturating_add(utxo.value());
+            if total >= need {
+                return Ok(());
+            }
+        }
+        Ok(())
+    })?;
+    anyhow::ensure!(total >= need, "insufficient funds: have={total} need={need}");
+
+    let mut inputs = Vec::new();
+    for (op, _) in &selected {
+        inputs.push(TxInput::new(op.clone(), Script::new(vec![]), u32::MAX));
+    }
+    let mut outputs = vec![TxOutput::new(amount, build_p2addr_script_pubkey(to_addr))];
+    let change = total - need;
+    if change > 0 {
+        outputs.push(TxOutput::new(
+            change,
+            build_p2addr_script_pubkey(from_w.address()),
+        ));
+    }
+    let mut tx = Transaction {
+        version: 1,
+        inputs,
+        outputs,
+        locktime: 0,
+    };
+    let pubkey32 = from_w.pubkey32();
+    for i in 0..tx.inputs.len() {
+        let msg32 = sighash(&tx, i)?;
+        let sig = from_w.sign(&msg32);
+        tx.inputs[i].script_sig = build_script_sig(&sig, pubkey32);
+    }
+    chain.add_mempool_tx(tx)?;
+
+    let prev_hash = chain.tip()?.map(|t| t.hash).unwrap_or(Hash::ZERO);
+    let height = chain.tip()?.map(|t| t.height + 1).unwrap_or(0);
+    let difficulty = chain.difficulty_for_next_block()?;
+    let fees = chain.mempool_fees()?;
+    let uncles = chain.select_uncles()?;
+    let block = Miner::mine_next_block(
+        prev_hash,
+        height,
+        difficulty,
+        from_w.address(),
+        GENESIS_MESSAGE.as_bytes(),
+        chain.mempool_snapshot(),
+        fees,
+        uncles,
+    )?;
+    let hash = chain
+        .accept_block(&block)?
+        .expect("mined block must be accepted");
+    println!("sent {} DBC to {} in block height={} hash={}", amount_dbc, to, height, hash.to_hex());
+    Ok(())
 }

@@ -13,6 +13,9 @@
 # Release binaries (host on Drive / GitHub Releases instead)
 /release-package/*.exe
 /release-package/dbc-node
+dbc-installer.exe
+DBC-Windows-Release.zip
+/release-package/data/
 
 # OS / editor
 .DS_Store

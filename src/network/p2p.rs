@@ -16,9 +16,11 @@ use libp2p::{
 use tracing::{info, warn};
 
 use crate::{
+    api::status::{write_status, NodeStatusSnapshot},
     crypto::wallet::Address,
     network::{
-        protocol::{decode, encode, NetworkMessage, TOPIC_BLOCKS, TOPIC_SYNC, TOPIC_TXS},
+        peer_registry::PeerRegistry,
+        protocol::{decode, encode, NetworkMessage, TOPIC_BLOCKS, TOPIC_PEERS, TOPIC_SYNC, TOPIC_TXS},
         seeds::load_peers_file,
     },
     node::{chain::Chain, miner::Miner},
@@ -74,9 +76,15 @@ impl From<mdns::Event> for NodeEvent {
 
 pub struct P2pConfig {
     pub listen: Multiaddr,
-    /// Explicit peers (CLI + peers file). Should be community-operated, not founder home IP.
+    /// Extra bootstrap peers (CLI). Encrypted peers.enc is always used first (DuckDNS).
     pub bootstrap: Vec<Multiaddr>,
     pub peers_file: Option<std::path::PathBuf>,
+    /// Local encrypted peer registry (`data/peers.enc`).
+    pub peers_enc_path: PathBuf,
+    /// Shipped `peers.enc` copied on first run (contains DuckDNS bootstrap).
+    pub bundled_peers_enc: Option<PathBuf>,
+    /// When false (host/seed), do not dial out — others find you via the peer list.
+    pub dial_peers: bool,
     pub mine: bool,
     /// Optional file-based mining control. When set, the node will mine only when this file contains "1".
     /// This lets a GUI toggle mining without restarting the node.
@@ -89,20 +97,55 @@ pub struct P2pConfig {
 
 pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::Result<()> {
     let key_path = data_dir.join("peer_key");
-    let key = load_or_create_key(&key_path)?;
+    let (key, is_new_key) = load_or_create_key(&key_path)?;
     let local_peer_id = key.public().to_peer_id();
+
+    let bundled = cfg
+        .bundled_peers_enc
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("peers.enc"));
+    let mut registry =
+        PeerRegistry::load_or_create(&cfg.peers_enc_path, &bundled)?;
+    if registry.refresh_duckdns_bootstrap() {
+        registry.save_encrypted(&cfg.peers_enc_path)?;
+    }
+    if registry.ensure_self(&cfg.listen, &local_peer_id) || is_new_key {
+        registry.save_encrypted(&cfg.peers_enc_path)?;
+        if is_new_key {
+            info!("first run — added this node to encrypted peers list");
+        }
+    }
 
     let blocks_topic = IdentTopic::new(TOPIC_BLOCKS);
     let txs_topic = IdentTopic::new(TOPIC_TXS);
     let sync_topic = IdentTopic::new(TOPIC_SYNC);
+    let peers_topic = IdentTopic::new(TOPIC_PEERS);
 
-    let mut bootstrap = cfg.bootstrap.clone();
+    let mut bootstrap = registry.dial_order();
+    for addr in &cfg.bootstrap {
+        let s = addr.to_string();
+        if bootstrap.iter().any(|b| b.to_string() == s) {
+            continue;
+        }
+        if s.contains("digitalbritishpound.duckdns.org") {
+            bootstrap.insert(0, addr.clone());
+        } else {
+            bootstrap.push(addr.clone());
+        }
+    }
     if let Some(ref path) = cfg.peers_file {
-        bootstrap.extend(load_peers_file(path)?);
+        for addr in load_peers_file(path)? {
+            let s = addr.to_string();
+            if !bootstrap.iter().any(|b| b.to_string() == s) {
+                bootstrap.push(addr);
+            }
+        }
     }
 
     let enable_mdns = cfg.enable_mdns;
     let enable_dht = cfg.enable_dht;
+    let dial_peers = cfg.dial_peers;
+    let peers_enc_path = cfg.peers_enc_path.clone();
 
     let mut swarm = SwarmBuilder::with_existing_identity(key.clone())
         .with_tokio()
@@ -118,6 +161,7 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
             gs.subscribe(&blocks_topic)?;
             gs.subscribe(&txs_topic)?;
             gs.subscribe(&sync_topic)?;
+            gs.subscribe(&peers_topic)?;
 
             let kad_config = kad::Config::new(StreamProtocol::new(KAD_PROTOCOL));
             let store = MemoryStore::new(key.public().to_peer_id());
@@ -160,10 +204,10 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
 
     swarm.listen_on(cfg.listen.clone())?;
 
-    for addr in &bootstrap {
-        if let Err(e) = swarm.dial(addr.clone()) {
-            warn!("dial {addr} failed: {e}");
-        }
+    if dial_peers {
+        dial_peer_list(&mut swarm, &bootstrap, "startup");
+    } else {
+        info!("listen-only — waiting for incoming peer connections");
     }
 
     if enable_dht {
@@ -176,8 +220,15 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
 
     info!("P2P listening on {}", cfg.listen);
     info!("local peer id: {local_peer_id}");
-    if bootstrap.is_empty() && enable_dht {
-        info!("no explicit peers — waiting for DHT / gossip from other independent nodes");
+    if let Ok(Some(tip)) = chain.tip() {
+        info!("chain tip height={}", tip.height);
+    }
+    info!(
+        "encrypted peer list: {} entries (DuckDNS tried first)",
+        registry.peer_strings().len()
+    );
+    if bootstrap.is_empty() && enable_dht && dial_peers {
+        info!("no peers in list — waiting for DHT / gossip");
     }
     if !enable_mdns {
         info!("mDNS disabled (use --mdns only on trusted LANs)");
@@ -187,9 +238,11 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
     let (mine_tx, mut mine_rx) = tokio::sync::mpsc::channel::<()>(4);
 
     if mining_controlled {
-        // If a control file is provided, ensure it exists so the node has a deterministic initial state.
+        // Create mine_ctl only if missing — the UI writes "1"/"0" before spawning; do not overwrite.
         if let Some(ref p) = cfg.mine_ctl_file {
-            let _ = fs::write(p, if cfg.mine { "1" } else { "0" });
+            if !p.exists() {
+                let _ = fs::write(p, if cfg.mine { "1" } else { "0" });
+            }
         }
 
         let always_mine = cfg.mine;
@@ -223,6 +276,17 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
     }
 
     let mut kad_refresh = tokio::time::interval(Duration::from_secs(300));
+    let mut peer_search = tokio::time::interval(Duration::from_secs(45));
+    /// After this many failed search ticks (~45s each), listen only instead of dialling.
+    const SWITCH_TO_HOST_AFTER: u32 = 1;
+    /// While hosting, retry outbound dials every N search ticks (~6 min).
+    const RECONNECT_WHILE_HOSTING: u32 = 8;
+    let mut listen_only = !dial_peers;
+    let mut peer_search_attempts = 0u32;
+    let mut status_tick = tokio::time::interval(Duration::from_secs(5));
+    let status_data_dir = data_dir.to_path_buf();
+    let status_mine_ctl = cfg.mine_ctl_file.clone();
+    let status_always_mine = cfg.mine;
 
     loop {
         tokio::select! {
@@ -233,7 +297,16 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
                         ..
                     })) => {
                         if let Ok(msg) = decode(&message.data) {
-                            handle_network_message(&mut swarm, &chain, &blocks_topic, &sync_topic, msg).await?;
+                            handle_network_message(
+                                &mut swarm,
+                                &chain,
+                                &mut registry,
+                                &peers_enc_path,
+                                &blocks_topic,
+                                &sync_topic,
+                                &peers_topic,
+                                msg,
+                            ).await?;
                         }
                     }
                     SwarmEvent::Behaviour(NodeEvent::Kad(kad::Event::RoutingUpdated { peer, .. })) => {
@@ -249,8 +322,28 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
                         info!("listening on {address}");
                         info!("share this reachability-safe address only if you choose to seed (use VPN/VPS, not home IP for anonymity)");
                     }
-                    SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                    SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
                         info!("connected to {peer_id}");
+                        listen_only = false;
+                        peer_search_attempts = 0;
+                        let remote = match endpoint {
+                            libp2p::core::connection::ConnectedPoint::Dialer { address, .. } => {
+                                address.clone()
+                            }
+                            libp2p::core::connection::ConnectedPoint::Listener {
+                                send_back_addr,
+                                ..
+                            } => send_back_addr.clone(),
+                        };
+                        let with_peer = remote
+                            .clone()
+                            .with_p2p(peer_id)
+                            .unwrap_or(remote);
+                        if registry.add_multiaddr(&with_peer) {
+                            let _ = registry.save_encrypted(&peers_enc_path);
+                            info!("peer list updated ({})", registry.peer_strings().len());
+                        }
+                        publish_peer_list(&mut swarm, &registry, &peers_topic)?;
                         request_next_block(&mut swarm, &chain, &sync_topic)?;
                     }
                     _ => {}
@@ -258,6 +351,48 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
             }
             _ = kad_refresh.tick(), if enable_dht => {
                 let _ = swarm.behaviour_mut().kad.bootstrap();
+            }
+            _ = peer_search.tick(), if dial_peers => {
+                if swarm.connected_peers().next().is_some() {
+                    peer_search_attempts = 0;
+                    listen_only = false;
+                } else if listen_only {
+                    peer_search_attempts = peer_search_attempts.saturating_add(1);
+                    if peer_search_attempts % RECONNECT_WHILE_HOSTING == 0 {
+                        info!("retrying peer search while hosting");
+                        dial_peer_list(&mut swarm, &bootstrap, "background");
+                    }
+                } else {
+                    peer_search_attempts = peer_search_attempts.saturating_add(1);
+                    dial_peer_list(&mut swarm, &bootstrap, "retry");
+                    if peer_search_attempts >= SWITCH_TO_HOST_AFTER {
+                        listen_only = true;
+                        peer_search_attempts = 0;
+                        info!(
+                            "no peers found — switching to listen-only mode (waiting for incoming connections)"
+                        );
+                    }
+                }
+            }
+            _ = status_tick.tick() => {
+                let peer_count = swarm.connected_peers().count() as u32;
+                let tip_height = chain.tip().ok().flatten().map(|t| t.height);
+                let mining_enabled = if status_always_mine {
+                    true
+                } else if let Some(ref p) = status_mine_ctl {
+                    fs::read_to_string(p).map(|s| s.trim() == "1").unwrap_or(false)
+                } else {
+                    false
+                };
+                let _ = write_status(
+                    &status_data_dir,
+                    &NodeStatusSnapshot {
+                        tip_height,
+                        peer_count,
+                        mining_enabled,
+                        listening: true,
+                    },
+                );
             }
             Some(()) = mine_rx.recv() => {
                 if let Some(payout) = cfg.payout {
@@ -284,8 +419,11 @@ fn peer_id_from_multiaddr(addr: &Multiaddr) -> Option<PeerId> {
 async fn handle_network_message(
     swarm: &mut libp2p::Swarm<NodeBehaviour>,
     chain: &Chain,
+    registry: &mut PeerRegistry,
+    peers_enc_path: &Path,
     blocks_topic: &IdentTopic,
     sync_topic: &IdentTopic,
+    peers_topic: &IdentTopic,
     msg: NetworkMessage,
 ) -> anyhow::Result<()> {
     match msg {
@@ -320,9 +458,48 @@ async fn handle_network_message(
                 }
             }
         }
+        NetworkMessage::PeerList { peers } => {
+            let added = registry.merge_peer_strings(&peers);
+            if added > 0 {
+                registry.save_encrypted(peers_enc_path)?;
+                info!("merged {added} peer(s) from network — list now has {}", registry.peer_strings().len());
+                for p in peers {
+                    if let Ok(addr) = p.parse::<Multiaddr>() {
+                        if let Err(e) = swarm.dial(addr) {
+                            warn!("dial {p} failed: {e}");
+                        }
+                    }
+                }
+            }
+            publish_peer_list(swarm, registry, peers_topic)?;
+        }
     }
     let _ = blocks_topic;
     Ok(())
+}
+
+fn dial_peer_list(
+    swarm: &mut libp2p::Swarm<NodeBehaviour>,
+    addrs: &[Multiaddr],
+    reason: &str,
+) {
+    info!("searching encrypted peer list ({reason}) — DuckDNS first, {} entries", addrs.len());
+    for addr in addrs {
+        if let Err(e) = swarm.dial(addr.clone()) {
+            warn!("dial {addr} failed: {e}");
+        }
+    }
+}
+
+fn publish_peer_list(
+    swarm: &mut libp2p::Swarm<NodeBehaviour>,
+    registry: &PeerRegistry,
+    peers_topic: &IdentTopic,
+) -> anyhow::Result<()> {
+    let msg = NetworkMessage::PeerList {
+        peers: registry.peer_strings(),
+    };
+    publish(swarm, peers_topic, &msg)
 }
 
 fn request_next_block(
@@ -348,6 +525,7 @@ async fn try_mine_and_publish(
     let fees = chain.mempool_fees()?;
     let uncles = chain.select_uncles()?;
 
+    info!("mining block height={height} (BritishWork PoW — solo can take hours)…");
     let block = Miner::mine_next_block(
         prev_hash,
         height,
@@ -380,12 +558,12 @@ fn publish(
     Ok(())
 }
 
-fn load_or_create_key(path: &Path) -> anyhow::Result<Keypair> {
+fn load_or_create_key(path: &Path) -> anyhow::Result<(Keypair, bool)> {
     if path.exists() {
         let bytes = std::fs::read(path)?;
-        return Ok(Keypair::from_protobuf_encoding(&bytes)?);
+        return Ok((Keypair::from_protobuf_encoding(&bytes)?, false));
     }
     let kp = Keypair::generate_ed25519();
     std::fs::write(path, kp.to_protobuf_encoding()?)?;
-    Ok(kp)
+    Ok((kp, true))
 }

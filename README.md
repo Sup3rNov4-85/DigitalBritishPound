@@ -6,7 +6,7 @@ Rust full-node prototype aligned with the DBC whitepaper: CPU-oriented proof-of-
 
 ## Download & launch
 
-- **Windows release zip:** [Google Drive](https://drive.google.com/file/d/1nLbqnzqZ2hiZ7s8aJc-RqDwLrwctp-X_/view?usp=sharing)
+- **Windows installer:** [Google Drive](https://drive.google.com/file/d/1xR_TWSbgWVTAl4p-XscrfP6kz88jcyxT/view?usp=sharing)
 - **Launch details (genesis, bootstrap, verify):** [docs/LAUNCH.md](docs/LAUNCH.md)
 - **Public whitepaper PDF:** [docs/DBC_Whitepaper_Public.pdf](docs/DBC_Whitepaper_Public.pdf)
 

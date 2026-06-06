@@ -1,35 +1,18 @@
-Digital British Coin (DBC) — Release Package
+Digital British Coin (DBC) — Release Package v1.0
 
 Genesis hash (MUST match):
 87f9442d436c6627f00a4bc025e149d0c2fe30dc5f77eb2c18acd086ba582a7d
 
-Bootstrap seed (first node):
-/dns4/digitalbritishpound.duckdns.org/tcp/8333/p2p/12D3KooWAmFcBBrh2H2SQQ5u2b2LU57kAToYKx18xct5zh3NVy7m
+Quick start (every user — same steps)
+1) Run dbc-installer.exe (or use Start Menu shortcut after install).
+2) Open DBC Launcher.
+3) Create Wallet — save your 24 words on paper.
+4) Click Start — goes online and mines.
+5) Click Stop — goes offline.
 
-Quick start (Windows PowerShell)
-1) Create a wallet (SAVE the 24 words; never share them):
-   .\dbc-node.exe wallet-new
-   (If you installed via `dbc-installer.exe`, use the installed `DBC Launcher` from Start Menu instead.)
-
-2) Start the Windows launcher UI:
-   .\dbc-ui.exe
-
-In the UI:
-- set your payout address to your `dbc1...`
-- click Start Node (sync)
-- click Start Miner to mine (Stop Miner pauses)
-
-You should see blocks sync and mining logs in the UI.
-
-Wallet basics
-- Receive: share your dbc1... address.
-- Check balance (stop your node first if it's running on the same data dir):
-  .\dbc-node.exe --data-dir .\data balance --address dbc1PASTE_YOUR_ADDRESS_HERE
-
-- Send (mnemonic is private; never share it):
-  .\dbc-node.exe --data-dir .\data send --from-mnemonic "word1 word2 ... word24" --to dbc1RECIPIENT --amount-dbc 1 --fee-dbc 0
+Send coins: enter recipient, amount, and your 24 words in the Send section.
 
 Notes
-- Do NOT run `init` (it would create a different chain).
-- If you can't connect, the seed operator may not have TCP 8333 forwarded correctly.
-- Full guide: DBC_Node_README.pdf
+- Do NOT run `init`. The app imports the official genesis for you.
+- User guide: USER_GUIDE.txt
+- Full protocol: DBC_Whitepaper.pdf (in docs) / DBC_Node_README.pdf

@@ -10,11 +10,14 @@ pub enum NetworkMessage {
     /// Request a block by height (for catch-up sync).
     GetBlock { height: u64 },
     BlockReply { height: u64, block: Option<Block> },
+    /// Encrypted peer registry sync — merge into local peers.enc.
+    PeerList { peers: Vec<String> },
 }
 
 pub const TOPIC_BLOCKS: &str = "dbc/blocks/v1";
 pub const TOPIC_TXS: &str = "dbc/txs/v1";
 pub const TOPIC_SYNC: &str = "dbc/sync/v1";
+pub const TOPIC_PEERS: &str = "dbc/peers/v1";
 
 pub fn encode(msg: &NetworkMessage) -> Result<Vec<u8>, bincode::Error> {
     bincode::serialize(msg)

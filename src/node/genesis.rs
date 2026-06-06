@@ -65,6 +65,12 @@ pub fn mine_genesis_default(timestamp: u32) -> Result<Block, String> {
     mine_genesis(timestamp, w.address())
 }
 
+/// Load a published genesis block from JSON (same format as `export-genesis`).
+pub fn import_genesis_json(path: &std::path::Path) -> Result<Block, String> {
+    let json = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
 /// Write genesis block JSON and print its hash (for forum posts — no IP required).
 pub fn export_genesis_json(block: &Block, path: &std::path::Path) -> Result<(), String> {
     let hash = block.compute_hash().map_err(|e| e.to_string())?;
