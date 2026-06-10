@@ -1,11 +1,11 @@
 [package]
 name = "dbc-node"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 
 [dependencies]
 # P2P Networking
-libp2p = { version = "0.56.0", features = ["tcp", "noise", "yamux", "gossipsub", "mdns", "identify", "kad", "tokio", "macros"] }
+libp2p = { version = "0.56.0", features = ["tcp", "noise", "yamux", "gossipsub", "mdns", "identify", "kad", "upnp", "tokio", "macros"] }
 
 # Cryptography
 schnorrkel = "0.11.5"   # Schnorr signatures (used by Polkadot/Substrate)
@@ -44,6 +44,7 @@ chacha20poly1305 = "0.10"
 
 # Windows GUI (launcher)
 eframe = "0.27"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [profile.release]
 opt-level     = 3

@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased (post-1.0.0 audit)
+## 1.0.1 — 2026-06-10
 
 ### Network
-- Cooperative mining: solo when alone; lowest peer id mines when peers connected
+- **All miners grind together** when peers are online (removed designated-miner / sync-only mode)
+- Bootstrap shortcut removed — block 1 inherits genesis difficulty (`0x1f00ffff`); retarget at 1,008 blocks unchanged
 - Encrypted peer pool grows from successful dials; community nodes dial oldest-first, DuckDNS last
 - Mining on `spawn_blocking` so P2P accept loop is not blocked
 - DuckDNS bootstrap stored DNS-only (stale `/p2p/` ids stripped on startup)
@@ -14,6 +15,7 @@
 - Status from `status.json`: `peer_pool_size`, `mining_mode`
 
 ### Docs
+- GitHub Releases as primary download; README/LAUNCH/FAQ updated
 - USER_GUIDE, README, REDDIT aligned with DNS-only bootstrap and Launcher flow
 
 ## 1.0.0 — 2026-06-05

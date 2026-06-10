@@ -1,8 +1,13 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use k256::schnorr::{signature::Verifier, Signature, VerifyingKey};
 use sha3::{Digest, Sha3_256};
 
 use crate::{
-    consensus::{block_subsidy_units, MAX_BLOCK_BYTES, COINBASE_MATURITY_BLOCKS},
+    consensus::{
+        block_subsidy_units, median_time_past, next_difficulty_target, COINBASE_MATURITY_BLOCKS,
+        MAX_BLOCK_BYTES, MAX_FUTURE_BLOCK_TIME_SECS,
+    },
     crypto::{british_work::pow_hash, wallet::Address},
     node::uncles::{uncle_reward_units, validate_uncles},
     storage::chaindb::ChainDb,
@@ -54,6 +59,16 @@ pub enum ValidationError {
     UncleUnknownParent,
     #[error("duplicate uncle")]
     UncleDuplicate,
+    #[error("uncle is a canonical main-chain block")]
+    UncleIsCanonical,
+    #[error("wrong difficulty target: expected 0x{expected:08x}, got 0x{got:08x}")]
+    BadDifficultyTarget { expected: u32, got: u32 },
+    #[error("block timestamp too far in the future")]
+    TimestampTooFarInFuture,
+    #[error("block timestamp before median of recent blocks")]
+    TimestampTooOld,
+    #[error("chain db error: {0}")]
+    Db(String),
 }
 
 /// Very small "standard" script format for this prototype:
@@ -179,6 +194,7 @@ pub fn validate_transaction(utxos: &UTXOSet, tx: &Transaction, current_height: u
     })
 }
 
+#[derive(Debug)]
 pub struct BlockFees {
     pub total_fees_units: u64,
 }
@@ -196,6 +212,33 @@ pub fn validate_block(
         .len();
     if size > MAX_BLOCK_BYTES {
         return Err(ValidationError::BlockTooLarge);
+    }
+
+    // Difficulty target must follow the consensus retarget schedule.
+    let expected_target =
+        next_difficulty_target(chain, height).map_err(|e| ValidationError::Db(e.to_string()))?;
+    if block.header.difficulty_target != expected_target {
+        return Err(ValidationError::BadDifficultyTarget {
+            expected: expected_target,
+            got: block.header.difficulty_target,
+        });
+    }
+
+    // Timestamp rules: at most 2h in the future, and not before the median
+    // timestamp of recent blocks (median-time-past).
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if block.header.timestamp as u64 > now.saturating_add(MAX_FUTURE_BLOCK_TIME_SECS) {
+        return Err(ValidationError::TimestampTooFarInFuture);
+    }
+    if let Some(mtp) =
+        median_time_past(chain, height).map_err(|e| ValidationError::Db(e.to_string()))?
+    {
+        if block.header.timestamp < mtp {
+            return Err(ValidationError::TimestampTooOld);
+        }
     }
 
     if !block.verify_merkle_root().map_err(|e| ValidationError::Dbc(e))? {

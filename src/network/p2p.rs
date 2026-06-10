@@ -11,7 +11,7 @@ use libp2p::{
     mdns,
     noise,
     swarm::{behaviour::toggle::Toggle, NetworkBehaviour, SwarmEvent},
-    tcp, yamux, Multiaddr, PeerId, StreamProtocol, SwarmBuilder,
+    tcp, upnp, yamux, Multiaddr, PeerId, StreamProtocol, SwarmBuilder,
 };
 use tracing::{info, warn};
 
@@ -39,6 +39,8 @@ struct NodeBehaviour {
     /// Kademlia DHT — decentralised peer discovery (whitepaper). No central seed required.
     kad: kad::Behaviour<MemoryStore>,
     identify: identify::Behaviour,
+    /// UPnP / NAT-PMP automatic port mapping (on by default).
+    upnp: Toggle<upnp::tokio::Behaviour>,
     /// LAN-only; off by default so your node does not advertise on local multicast.
     mdns: Toggle<mdns::tokio::Behaviour>,
 }
@@ -48,6 +50,7 @@ enum NodeEvent {
     Gossipsub(gossipsub::Event),
     Kad(kad::Event),
     Identify(identify::Event),
+    Upnp(upnp::Event),
     Mdns(mdns::Event),
 }
 
@@ -66,6 +69,12 @@ impl From<kad::Event> for NodeEvent {
 impl From<identify::Event> for NodeEvent {
     fn from(e: identify::Event) -> Self {
         NodeEvent::Identify(e)
+    }
+}
+
+impl From<upnp::Event> for NodeEvent {
+    fn from(e: upnp::Event) -> Self {
+        NodeEvent::Upnp(e)
     }
 }
 
@@ -94,6 +103,8 @@ pub struct P2pConfig {
     /// mDNS is for local dev only; keep false for anonymous public mining.
     pub enable_mdns: bool,
     pub enable_dht: bool,
+    /// Ask the home router to open the listen port automatically (UPnP / NAT-PMP).
+    pub enable_upnp: bool,
 }
 
 pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::Result<()> {
@@ -133,6 +144,7 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
 
     let enable_mdns = cfg.enable_mdns;
     let enable_dht = cfg.enable_dht;
+    let enable_upnp = cfg.enable_upnp;
     let dial_peers = cfg.dial_peers;
     let peers_enc_path = cfg.peers_enc_path.clone();
 
@@ -172,6 +184,12 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
                 key.public(),
             ));
 
+            let upnp_behaviour = if enable_upnp {
+                Toggle::from(Some(upnp::tokio::Behaviour::default()))
+            } else {
+                Toggle::from(None)
+            };
+
             let mdns = if enable_mdns {
                 Toggle::from(Some(mdns::tokio::Behaviour::new(
                     mdns::Config::default(),
@@ -185,6 +203,7 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
                 gossipsub: gs,
                 kad: kad_behaviour,
                 identify,
+                upnp: upnp_behaviour,
                 mdns,
             })
         })?
@@ -221,6 +240,11 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
     }
     if !enable_mdns {
         info!("mDNS disabled (use --mdns only on trusted LANs)");
+    }
+    if enable_upnp {
+        info!("UPnP enabled — will try to open the listen port on your router automatically");
+    } else {
+        info!("UPnP disabled — inbound connections require manual port forwarding");
     }
 
     let mining_controlled = cfg.mine || cfg.mine_ctl_file.is_some();
@@ -307,6 +331,25 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
                     SwarmEvent::Behaviour(NodeEvent::Kad(kad::Event::RoutingUpdated { peer, .. })) => {
                         info!("kad routing updated: {peer}");
                     }
+                    SwarmEvent::Behaviour(NodeEvent::Upnp(ev)) => match ev {
+                        upnp::Event::NewExternalAddr(addr) => {
+                            info!("upnp: router mapped external address {addr} — node is reachable from the internet");
+                        }
+                        upnp::Event::ExpiredExternalAddr(addr) => {
+                            warn!("upnp: external address {addr} expired");
+                        }
+                        upnp::Event::GatewayNotFound => {
+                            warn!("upnp: no UPnP gateway found — outbound-only operation still works");
+                        }
+                        upnp::Event::NonRoutableGateway => {
+                            warn!("upnp: router has no public IP (CGNAT?) — outbound-only operation still works");
+                        }
+                    },
+                    SwarmEvent::Behaviour(NodeEvent::Identify(identify::Event::Received { peer_id, info, .. })) => {
+                        for addr in info.listen_addrs {
+                            swarm.behaviour_mut().kad.add_address(&peer_id, addr);
+                        }
+                    }
                     SwarmEvent::Behaviour(NodeEvent::Mdns(mdns::Event::Discovered(list))) => {
                         for (peer, addr) in list {
                             info!("mdns discovered {peer} at {addr}");
@@ -344,12 +387,6 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
                         }
                         publish_peer_list(&mut swarm, &registry, &peers_topic)?;
                         request_next_block(&mut swarm, &chain, &sync_topic)?;
-                        apply_cooperative_mining_role(
-                            &swarm,
-                            local_peer_id,
-                            mining_ctl_enabled(status_always_mine, &status_mine_ctl),
-                            &mut mining_task,
-                        );
                     }
                     _ => {}
                 }
@@ -394,7 +431,7 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
                 let peer_count = swarm.connected_peers().count() as u32;
                 let tip_height = chain.tip().ok().flatten().map(|t| t.height);
                 let mining_enabled = mining_ctl_enabled(status_always_mine, &status_mine_ctl);
-                let policy = mining_policy(&swarm, local_peer_id, mining_enabled);
+                let policy = mining_policy(&swarm, mining_enabled);
                 let _ = write_status(
                     &status_data_dir,
                     &NodeStatusSnapshot {
@@ -409,14 +446,13 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
             }
             Some(()) = mine_rx.recv(), if mining_task.is_none() && cfg.payout.is_some() => {
                 let mining_enabled = mining_ctl_enabled(status_always_mine, &status_mine_ctl);
-                let policy = mining_policy(&swarm, local_peer_id, mining_enabled);
-                if policy.should_mine()
-                    && (!matches!(policy, MiningPolicy::Solo) || initial_peer_search_done)
-                {
+                let policy = mining_policy(&swarm, mining_enabled);
+                if policy.should_mine() && initial_peer_search_done {
                     if let Some(payout) = cfg.payout {
+                        let peer_n = swarm.connected_peers().count();
                         match prepare_mine_job(&chain, payout) {
                             Ok(job) => {
-                                info!("{}", policy.mining_log_line(job.height));
+                                info!("{}", policy.mining_log_line(job.height, peer_n));
                                 mining_task = Some(tokio::task::spawn_blocking(move || {
                                     Miner::mine_next_block(
                                         job.prev_hash,
@@ -424,8 +460,7 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
                                         job.difficulty,
                                         job.payout,
                                         GENESIS_MSG,
-                                        job.txs,
-                                        job.fees,
+                                        job.candidate_txs,
                                         job.uncles,
                                     )
                                 }));
@@ -433,8 +468,6 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
                             Err(e) => warn!("mine prep failed: {e}"),
                         }
                     }
-                } else if matches!(policy, MiningPolicy::NetworkSync) {
-                    let _ = request_next_block(&mut swarm, &chain, &sync_topic);
                 }
             }
             mine_result = async {
@@ -466,8 +499,7 @@ struct MineJob {
     height: u64,
     difficulty: u32,
     payout: Address,
-    txs: Vec<crate::Transaction>,
-    fees: u64,
+    candidate_txs: Vec<(crate::Transaction, u64)>,
     uncles: Vec<crate::BlockHeader>,
 }
 
@@ -475,33 +507,31 @@ struct MineJob {
 enum MiningPolicy {
     Off,
     Solo,
-    NetworkLead,
-    NetworkSync,
+    Network,
 }
 
 impl MiningPolicy {
     fn should_mine(self) -> bool {
-        matches!(self, MiningPolicy::Solo | MiningPolicy::NetworkLead)
+        !matches!(self, MiningPolicy::Off)
     }
 
     fn status_mode(self) -> &'static str {
         match self {
             MiningPolicy::Off => "off",
             MiningPolicy::Solo => "solo",
-            MiningPolicy::NetworkLead => "lead",
-            MiningPolicy::NetworkSync => "sync",
+            MiningPolicy::Network => "network",
         }
     }
 
-    fn mining_log_line(self, height: u64) -> String {
+    fn mining_log_line(self, height: u64, peer_count: usize) -> String {
         match self {
             MiningPolicy::Solo => format!(
-                "solo mining block height={height} (no peers — can take hours)…"
+                "solo mining block height={height} (BritishWork — can take minutes)…"
             ),
-            MiningPolicy::NetworkLead => format!(
-                "network mining block height={height} for fellow miners (can take hours)…"
+            MiningPolicy::Network => format!(
+                "network mining block height={height} with {peer_count} peer(s) — all miners grind, first block wins…"
             ),
-            MiningPolicy::Off | MiningPolicy::NetworkSync => String::new(),
+            MiningPolicy::Off => String::new(),
         }
     }
 }
@@ -518,27 +548,14 @@ fn mining_ctl_enabled(always_mine: bool, mine_ctl_file: &Option<PathBuf>) -> boo
     false
 }
 
-fn is_designated_miner(swarm: &libp2p::Swarm<NodeBehaviour>, local: PeerId) -> bool {
-    let mut ids: Vec<PeerId> = swarm.connected_peers().copied().collect();
-    ids.push(local);
-    ids.sort();
-    ids.first() == Some(&local)
-}
-
-fn mining_policy(
-    swarm: &libp2p::Swarm<NodeBehaviour>,
-    local: PeerId,
-    ctl_enabled: bool,
-) -> MiningPolicy {
+fn mining_policy(swarm: &libp2p::Swarm<NodeBehaviour>, ctl_enabled: bool) -> MiningPolicy {
     if !ctl_enabled {
         return MiningPolicy::Off;
     }
     if swarm.connected_peers().next().is_none() {
         MiningPolicy::Solo
-    } else if is_designated_miner(swarm, local) {
-        MiningPolicy::NetworkLead
     } else {
-        MiningPolicy::NetworkSync
+        MiningPolicy::Network
     }
 }
 
@@ -548,32 +565,12 @@ fn abort_mining_task(task: &mut Option<tokio::task::JoinHandle<Result<Block, Min
     }
 }
 
-fn apply_cooperative_mining_role(
-    swarm: &libp2p::Swarm<NodeBehaviour>,
-    local: PeerId,
-    ctl_enabled: bool,
-    mining_task: &mut Option<tokio::task::JoinHandle<Result<Block, MinerError>>>,
-) {
-    let policy = mining_policy(swarm, local, ctl_enabled);
-    match policy {
-        MiningPolicy::NetworkSync => {
-            abort_mining_task(mining_task);
-            info!("network sync — fellow miner online, syncing blocks (not solo mining)");
-        }
-        MiningPolicy::NetworkLead => {
-            info!("network lead — mining for fellow miners while they sync");
-        }
-        MiningPolicy::Solo | MiningPolicy::Off => {}
-    }
-}
-
 fn prepare_mine_job(chain: &Chain, payout: Address) -> anyhow::Result<MineJob> {
     Ok(MineJob {
         prev_hash: chain.tip()?.map(|t| t.hash).unwrap_or(Hash::ZERO),
         height: chain.tip()?.map(|t| t.height + 1).unwrap_or(0),
         difficulty: chain.difficulty_for_next_block()?,
-        txs: chain.mempool_snapshot(),
-        fees: chain.mempool_fees()?,
+        candidate_txs: chain.mempool_snapshot_with_fees(),
         uncles: chain.select_uncles()?,
         payout,
     })

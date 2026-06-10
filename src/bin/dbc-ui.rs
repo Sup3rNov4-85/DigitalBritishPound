@@ -10,6 +10,62 @@ use eframe::egui;
 
 use dbc_node::api::status::read_status;
 
+const LOGO_PNG: &[u8] = include_bytes!("../../assets/logo.png");
+
+/// Deep navy from the DBC logo artwork.
+const NAVY_BG: egui::Color32 = egui::Color32::from_rgb(1, 11, 30);
+const NAVY_PANEL: egui::Color32 = egui::Color32::from_rgb(4, 18, 42);
+const NAVY_HOVER: egui::Color32 = egui::Color32::from_rgb(8, 28, 58);
+const TEXT_ON_NAVY: egui::Color32 = egui::Color32::from_rgb(220, 228, 240);
+const TEXT_MUTED_NAVY: egui::Color32 = egui::Color32::from_rgb(130, 150, 180);
+const INPUT_BLACK: egui::Color32 = egui::Color32::from_rgb(0, 0, 0);
+const DIVIDER_WHITE: egui::Color32 = egui::Color32::WHITE;
+
+fn load_logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
+    let img = image::load_from_memory(LOGO_PNG)
+        .expect("logo.png")
+        .to_rgba8();
+    let [w, h] = [img.width() as usize, img.height() as usize];
+    let color_image = egui::ColorImage::from_rgba_unmultiplied([w, h], &img.into_raw());
+    ctx.load_texture("dbc_logo", color_image, egui::TextureOptions::LINEAR)
+}
+
+fn apply_navy_theme(ctx: &egui::Context) {
+    let mut style = (*ctx.style()).clone();
+    style.visuals.dark_mode = true;
+    style.visuals.override_text_color = Some(TEXT_ON_NAVY);
+    style.visuals.panel_fill = NAVY_BG;
+    style.visuals.window_fill = NAVY_BG;
+    style.visuals.extreme_bg_color = NAVY_BG;
+    style.visuals.faint_bg_color = NAVY_PANEL;
+    style.visuals.widgets.noninteractive.bg_fill = NAVY_PANEL;
+    style.visuals.widgets.inactive.bg_fill = NAVY_PANEL;
+    style.visuals.widgets.hovered.bg_fill = NAVY_HOVER;
+    style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(12, 36, 72);
+    style.visuals.widgets.noninteractive.fg_stroke =
+        egui::Stroke::new(1.0, TEXT_MUTED_NAVY);
+    style.visuals.widgets.noninteractive.bg_stroke =
+        egui::Stroke::new(1.0, DIVIDER_WHITE);
+    style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, TEXT_ON_NAVY);
+    style.visuals.widgets.inactive.bg_stroke =
+        egui::Stroke::new(1.0, DIVIDER_WHITE);
+    ctx.set_style(style);
+}
+
+fn black_input_frame() -> egui::Frame {
+    egui::Frame::none()
+        .fill(INPUT_BLACK)
+        .stroke(egui::Stroke::new(1.0, DIVIDER_WHITE))
+        .inner_margin(egui::Margin::symmetric(6.0, 4.0))
+        .rounding(egui::Rounding::same(2.0))
+}
+
+fn top_bar_frame() -> egui::Frame {
+    egui::Frame::none()
+        .fill(NAVY_BG)
+        .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+}
+
 /// App version (matches Cargo.toml).
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Prevent a visible `cmd.exe` window when spawning `dbc-node.exe` on Windows.
@@ -150,16 +206,8 @@ impl NodeStatus {
         if line.contains("network mining block height=") {
             if let Some(h) = parse_height_after(line, "network mining block height=") {
                 self.mining_line =
-                    format!("Network mining block {h} — fellow miners syncing (can take hours)…");
+                    format!("Mining block {h} with peers — everyone grinds, first block wins…");
             }
-            return None;
-        }
-        if line.contains("network sync — fellow miner online") {
-            self.mining_line = "Syncing — fellow miner working on the next block".to_string();
-            return None;
-        }
-        if line.contains("network lead — mining for fellow miners") {
-            self.mining_line = "Leading — mining for the network".to_string();
             return None;
         }
         if line.contains("first run — joined the encrypted peer bootstrap pool") {
@@ -191,6 +239,7 @@ fn parse_height_after(line: &str, prefix: &str) -> Option<u64> {
 }
 
 pub struct DbcUiApp {
+    logo: Option<egui::TextureHandle>,
     payout_address: String,
     wallet_mnemonic: Option<String>,
     show_wallet_backup: bool,
@@ -563,14 +612,11 @@ impl DbcUiApp {
                     || self.status.mining_line.contains("waiting") =>
                 {
                     self.status.mining_line =
-                        "Solo mining — searching for peers first, then grinding if alone".to_string();
+                        "Solo mining — searching for peers first, then grinding".to_string();
                 }
-                "sync" => {
+                "network" if !self.status.mining_line.contains("Mining block") => {
                     self.status.mining_line =
-                        "Syncing — fellow miner working on the next block".to_string();
-                }
-                "lead" if !self.status.mining_line.contains("Network mining") => {
-                    self.status.mining_line = "Leading — mining for the network".to_string();
+                        "Mining with peers — all nodes grind together".to_string();
                 }
                 _ => {}
             }
@@ -701,6 +747,7 @@ impl Default for DbcUiApp {
             .unwrap_or_default();
 
         let mut app = Self {
+            logo: None,
             payout_address,
             wallet_mnemonic: None,
             show_wallet_backup: false,
@@ -760,32 +807,78 @@ impl eframe::App for DbcUiApp {
             }
         }
 
-        egui::TopBottomPanel::top("top").show(ctx, |ui| {
-            ui.heading(format!("Digital British Coin v{APP_VERSION}"));
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(!self.node_running(), egui::Button::new("Start"))
-                    .clicked()
-                {
-                    if let Err(e) = self.start_online() {
-                        self.error = Some(e);
-                    }
+        if self.logo.is_none() {
+            self.logo = Some(load_logo_texture(ctx));
+        }
+
+        egui::TopBottomPanel::top("top")
+            .frame(top_bar_frame())
+            .show(ctx, |ui| {
+                let logo_h = 44.0;
+                let logo_w = self.logo.as_ref().map(|logo| {
+                    let [tw, th] = logo.size();
+                    logo_h * (tw as f32 / th as f32)
+                });
+                let bar_h = 52.0_f32;
+                let (bar_rect, _) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), bar_h),
+                    egui::Sense::hover(),
+                );
+
+                if let (Some(logo), Some(lw)) = (&self.logo, logo_w) {
+                    let logo_rect = egui::Rect::from_center_size(
+                        bar_rect.center(),
+                        egui::vec2(lw, logo_h),
+                    );
+                    ui.put(
+                        logo_rect,
+                        egui::Image::new((logo.id(), egui::vec2(lw, logo_h)))
+                            .fit_to_exact_size(egui::vec2(lw, logo_h)),
+                    );
                 }
-                if ui
-                    .add_enabled(self.node_running(), egui::Button::new("Stop"))
-                    .clicked()
-                {
-                    self.stop_online();
-                }
-                if self.node_running() {
-                    ui.colored_label(egui::Color32::from_rgb(0, 160, 0), "● Online");
-                } else {
-                    ui.colored_label(egui::Color32::GRAY, "○ Offline");
-                }
+
+                ui.allocate_ui_at_rect(
+                    egui::Rect::from_min_size(bar_rect.min, egui::vec2(bar_rect.width(), bar_h)),
+                    |ui| {
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.vertical(|ui| {
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .add_enabled(
+                                            !self.node_running(),
+                                            egui::Button::new("Start"),
+                                        )
+                                        .clicked()
+                                    {
+                                        if let Err(e) = self.start_online() {
+                                            self.error = Some(e);
+                                        }
+                                    }
+                                    if ui
+                                        .add_enabled(self.node_running(), egui::Button::new("Stop"))
+                                        .clicked()
+                                    {
+                                        self.stop_online();
+                                    }
+                                    if self.node_running() {
+                                        ui.colored_label(
+                                            egui::Color32::from_rgb(0, 200, 80),
+                                            "● Online",
+                                        );
+                                    } else {
+                                        ui.colored_label(TEXT_MUTED_NAVY, "○ Offline");
+                                    }
+                                });
+                                ui.label(
+                                    egui::RichText::new("Start = node + mining. Stop = offline.")
+                                        .color(TEXT_MUTED_NAVY)
+                                        .size(12.0),
+                                );
+                            });
+                        });
+                    },
+                );
             });
-            ui.label("Start = node + mining. Stop = offline.");
-            ui.separator();
-        });
 
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical()
@@ -800,9 +893,9 @@ impl eframe::App for DbcUiApp {
             ui.heading("Progress");
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 if self.node_running() {
-                    ui.colored_label(egui::Color32::from_rgb(0, 160, 0), "● Online");
+                    ui.colored_label(egui::Color32::from_rgb(0, 200, 80), "● Online");
                 } else {
-                    ui.colored_label(egui::Color32::GRAY, "○ Offline");
+                    ui.colored_label(TEXT_MUTED_NAVY, "○ Offline");
                 }
                 ui.label(format!("Network: {}", self.status.network_line));
                 if self.status.peer_count > 0 {
@@ -869,12 +962,16 @@ impl eframe::App for DbcUiApp {
 
             ui.add_space(4.0);
             ui.label("Restore wallet from recovery phrase:");
-            ui.add(
-                egui::TextEdit::multiline(&mut self.restore_mnemonic_input)
-                    .hint_text("Paste or type all 24 words, separated by spaces…")
-                    .desired_rows(3)
-                    .desired_width(f32::INFINITY),
-            );
+            black_input_frame().show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.restore_mnemonic_input)
+                        .hint_text("Paste or type all 24 words, separated by spaces…")
+                        .desired_rows(3)
+                        .desired_width(f32::INFINITY)
+                        .frame(false)
+                        .text_color(TEXT_ON_NAVY),
+                );
+            });
             ui.horizontal(|ui| {
                 let can_restore = !self.node_running()
                     && !normalize_mnemonic(&self.restore_mnemonic_input).is_empty();
@@ -892,10 +989,14 @@ impl eframe::App for DbcUiApp {
 
             ui.horizontal(|ui| {
                 ui.label("Your address:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.payout_address)
-                        .desired_width(f32::INFINITY),
-                );
+                black_input_frame().show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.payout_address)
+                            .desired_width(ui.available_width())
+                            .frame(false)
+                            .text_color(TEXT_ON_NAVY),
+                    );
+                });
                 if ui.button("Copy").clicked() {
                     ctx.copy_text(self.payout_address.clone());
                 }
@@ -908,20 +1009,45 @@ impl eframe::App for DbcUiApp {
 
             ui.horizontal(|ui| {
                 ui.label("To (dbc1…):");
-                ui.text_edit_singleline(&mut self.send_to);
+                black_input_frame().show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.send_to)
+                            .desired_width(ui.available_width())
+                            .frame(false)
+                            .text_color(TEXT_ON_NAVY),
+                    );
+                });
             });
             ui.horizontal(|ui| {
                 ui.label("Amount (DBC):");
-                ui.text_edit_singleline(&mut self.send_amount_dbc);
+                black_input_frame().show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.send_amount_dbc)
+                            .desired_width(80.0)
+                            .frame(false)
+                            .text_color(TEXT_ON_NAVY),
+                    );
+                });
                 ui.label("Fee:");
-                ui.text_edit_singleline(&mut self.send_fee_dbc);
+                black_input_frame().show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.send_fee_dbc)
+                            .desired_width(60.0)
+                            .frame(false)
+                            .text_color(TEXT_ON_NAVY),
+                    );
+                });
             });
             ui.label("Recovery phrase (24 words — required to send, not saved):");
-            ui.add(
-                egui::TextEdit::multiline(&mut self.send_mnemonic_input)
-                    .desired_rows(2)
-                    .desired_width(f32::INFINITY),
-            );
+            black_input_frame().show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.send_mnemonic_input)
+                        .desired_rows(2)
+                        .desired_width(f32::INFINITY)
+                        .frame(false)
+                        .text_color(TEXT_ON_NAVY),
+                );
+            });
             if ui.button("Send").clicked()
             {
                 let was_running = self.node_running();
@@ -1003,6 +1129,9 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "DBC Launcher",
         options,
-        Box::new(|_cc| Box::<DbcUiApp>::default()),
+        Box::new(|cc| {
+            apply_navy_theme(&cc.egui_ctx);
+            Box::<DbcUiApp>::default()
+        }),
     )
 }

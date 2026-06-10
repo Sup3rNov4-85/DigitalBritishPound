@@ -39,7 +39,7 @@ peer connections.
 
 ## How do I verify the download?
 
-Download from [Google Drive](https://drive.google.com/file/d/151Oy8REpkWhEjHVG6qPafDDJH3v1-HDn/view?usp=sharing) and compare file hashes to `SHA256SUMS.txt` in the release package.
+Download `dbc-installer.exe` from [GitHub Releases](https://github.com/Sup3rNov4-85/DigitalBritishPound/releases) (or the [Google Drive mirror](https://drive.google.com/file/d/151Oy8REpkWhEjHVG6qPafDDJH3v1-HDn/view?usp=sharing)) and compare file hashes to `SHA256SUMS.txt` in the release package or repo.
 
 ## What is the official genesis hash?
 

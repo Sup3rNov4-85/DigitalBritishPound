@@ -27,7 +27,8 @@ pub fn pow_hash(header: &BlockHeader) -> Result<Hash, String> {
     let bytes = bincode::serialize(header).map_err(|e| e.to_string())?;
     #[cfg(test)]
     {
-        // Fast path for unit tests; use `cargo test --release` with `DBC_BRITISHWORK_MIB` for full PoW.
+        // Fast path for unit tests; mainnet builds always use the full
+        // memory-hard BritishWork function below.
         return Ok(Hash::from_bytes(*blake3::hash(&bytes).as_bytes()));
     }
     #[cfg(not(test))]

@@ -6,7 +6,14 @@ Rust full-node prototype aligned with the DBC whitepaper: CPU-oriented proof-of-
 
 ## Download & launch
 
-- **Windows installer:** [Google Drive](https://drive.google.com/file/d/151Oy8REpkWhEjHVG6qPafDDJH3v1-HDn/view?usp=sharing)
+| What | Where |
+|------|--------|
+| **Source code** | This repo — clone and build (see below) |
+| **Windows installer** | [GitHub Releases](https://github.com/Sup3rNov4-85/DigitalBritishPound/releases) (`dbc-installer.exe`) |
+| **Installer mirror** | [Google Drive](https://drive.google.com/file/d/151Oy8REpkWhEjHVG6qPafDDJH3v1-HDn/view?usp=sharing) (optional) |
+
+Most users want the **installer** from Releases (or the Drive mirror). Developers can clone this repo and run `scripts/build_release.ps1`.
+
 - **Launch details (genesis, bootstrap, verify):** [docs/LAUNCH.md](docs/LAUNCH.md)
 - **Public whitepaper PDF:** [docs/DBC_Whitepaper_Public.pdf](docs/DBC_Whitepaper_Public.pdf)
 

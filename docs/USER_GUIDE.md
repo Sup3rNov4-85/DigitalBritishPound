@@ -27,7 +27,10 @@ To use an existing wallet: paste your 24 words under **Restore Wallet** and clic
 
 **Start = node + mining. Stop = offline.**
 
-Solo CPU mining can take **minutes to hours** per block (BritishWork — one core, fair for all hardware).
+CPU mining uses BritishWork (2 GB RAM per attempt). Genesis uses `0x1f00ffff` (easier
+than Bitcoin); block 1 inherits it and retarget every 1,008 blocks adjusts toward the
+15-minute target. With peers online **every node mines together** and the first valid
+block wins.
 
 ## Balance
 

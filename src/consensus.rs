@@ -47,8 +47,20 @@ pub const COINBASE_MATURITY_BLOCKS: u64 = 100;
 /// Max block size (whitepaper): 2 MB, upgradeable via soft fork.
 pub const MAX_BLOCK_BYTES: usize = 2 * 1024 * 1024;
 
-/// Genesis / initial compact difficulty (Bitcoin-style nBits, easy for laptops).
+/// Genesis compact difficulty (fixed in the published genesis block hash).
+///
+/// Easier than Bitcoin genesis (`0x1d00ffff`); block 1 inherits this target until
+/// retarget at height 1,008 adjusts toward the 15-minute block time.
 pub const GENESIS_DIFFICULTY_TARGET: u32 = 0x1f00_ffff;
+
+/// Bitcoin mainnet genesis compact target (reference only).
+pub const BITCOIN_GENESIS_DIFFICULTY_TARGET: u32 = 0x1d00_ffff;
+
+/// Maximum allowed block timestamp drift into the future: 2 hours.
+pub const MAX_FUTURE_BLOCK_TIME_SECS: u64 = 2 * 60 * 60;
+
+/// Window for the median-time-past timestamp rule (Bitcoin-style, last 11 blocks).
+pub const MEDIAN_TIME_WINDOW_BLOCKS: usize = 11;
 
 /// Mainnet genesis hash (block 0). This is part of consensus: nodes MUST reject any
 /// chain whose height-0 block hash does not match.
@@ -119,6 +131,30 @@ pub fn next_difficulty_target(
     Ok(adjust_compact_target(prev_target, actual_secs, expected_secs))
 }
 
+/// Median timestamp of up to the last [`MEDIAN_TIME_WINDOW_BLOCKS`] blocks before `height`.
+///
+/// Returns `None` when there are no prior blocks (genesis).
+pub fn median_time_past(
+    chain: &crate::storage::chaindb::ChainDb,
+    height: u64,
+) -> Result<Option<u32>, crate::storage::chaindb::ChainDbError> {
+    if height == 0 {
+        return Ok(None);
+    }
+    let start = height.saturating_sub(MEDIAN_TIME_WINDOW_BLOCKS as u64);
+    let mut stamps = Vec::new();
+    for h in start..height {
+        if let Some(b) = chain.get_block_at_height(h)? {
+            stamps.push(b.header.timestamp);
+        }
+    }
+    if stamps.is_empty() {
+        return Ok(None);
+    }
+    stamps.sort_unstable();
+    Ok(Some(stamps[stamps.len() / 2]))
+}
+
 /// Scale compact target inversely with hashrate (higher actual time → easier target).
 fn adjust_compact_target(current: u32, actual_secs: u64, expected_secs: u64) -> u32 {
     if actual_secs == 0 || expected_secs == 0 {
@@ -182,6 +218,13 @@ mod tests {
     fn subsidy_starts_at_50_dbc() {
         assert_eq!(block_subsidy_units(0), 50 * UNITS_PER_DBC);
         assert_eq!(block_subsidy_units(1), 50 * UNITS_PER_DBC);
+    }
+
+    #[test]
+    fn genesis_easier_than_bitcoin() {
+        let btc = crate::expand_compact_target(BITCOIN_GENESIS_DIFFICULTY_TARGET);
+        let dbc = crate::expand_compact_target(GENESIS_DIFFICULTY_TARGET);
+        assert!(dbc > btc, "DBC genesis easier than Bitcoin genesis");
     }
 
     #[test]

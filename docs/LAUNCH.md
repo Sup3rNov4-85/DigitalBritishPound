@@ -2,9 +2,11 @@
 
 ## Download (Windows)
 
-**Official release:** [Google Drive — dbc-installer.exe](https://drive.google.com/file/d/151Oy8REpkWhEjHVG6qPafDDJH3v1-HDn/view?usp=sharing)
+**Official release:** [GitHub Releases — `dbc-installer.exe`](https://github.com/Sup3rNov4-85/DigitalBritishPound/releases)
 
-Or build `dbc-installer.exe` from this repository with `scripts/build_release.ps1`.
+**Mirror:** [Google Drive](https://drive.google.com/file/d/151Oy8REpkWhEjHVG6qPafDDJH3v1-HDn/view?usp=sharing) (same file; use if Releases is unavailable).
+
+**From source:** clone [github.com/Sup3rNov4-85/DigitalBritishPound](https://github.com/Sup3rNov4-85/DigitalBritishPound) and run `scripts/build_release.ps1` (requires Rust + NSIS).
 
 Verify file hashes with `SHA256SUMS.txt` after download.
 

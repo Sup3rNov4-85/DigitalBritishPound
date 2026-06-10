@@ -76,6 +76,9 @@ enum Command {
         /// LAN mDNS (off by default — do not use on home networks for anonymous launch).
         #[arg(long)]
         mdns: bool,
+        /// Disable UPnP automatic port forwarding (on by default).
+        #[arg(long)]
+        no_upnp: bool,
         /// Shipped encrypted peer list (default: peers.enc next to cwd).
         #[arg(long)]
         bundled_peers: Option<PathBuf>,
@@ -206,6 +209,7 @@ async fn main() -> anyhow::Result<()> {
             address,
             no_dht,
             mdns,
+            no_upnp,
             bundled_peers,
             host_only,
         } => {
@@ -243,6 +247,7 @@ async fn main() -> anyhow::Result<()> {
                     payout,
                     enable_mdns: mdns,
                     enable_dht: !no_dht,
+                    enable_upnp: !no_upnp,
                 },
             )
             .await?;
@@ -256,7 +261,6 @@ async fn main() -> anyhow::Result<()> {
 
             for _ in 0..blocks {
                 let difficulty = chain.difficulty_for_next_block()?;
-                let fees = chain.mempool_fees()?;
                 let uncles = chain.select_uncles()?;
                 let block = Miner::mine_next_block(
                     prev_hash,
@@ -264,8 +268,7 @@ async fn main() -> anyhow::Result<()> {
                     difficulty,
                     payout,
                     msg,
-                    chain.mempool_snapshot(),
-                    fees,
+                    chain.mempool_snapshot_with_fees(),
                     uncles,
                 )?;
                 let hash = chain
@@ -336,7 +339,7 @@ async fn main() -> anyhow::Result<()> {
                     chain.mempool_snapshot().len()
                 );
                 println!(
-                    "britishwork memory: {} MiB",
+                    "britishwork memory: {} MiB (fixed consensus parameter)",
                     dbc_node::crypto::british_work::memory_bytes() / (1024 * 1024)
                 );
             }
@@ -429,7 +432,6 @@ fn run_send(
     let prev_hash = chain.tip()?.map(|t| t.hash).unwrap_or(Hash::ZERO);
     let height = chain.tip()?.map(|t| t.height + 1).unwrap_or(0);
     let difficulty = chain.difficulty_for_next_block()?;
-    let fees = chain.mempool_fees()?;
     let uncles = chain.select_uncles()?;
     let block = Miner::mine_next_block(
         prev_hash,
@@ -437,8 +439,7 @@ fn run_send(
         difficulty,
         from_w.address(),
         GENESIS_MESSAGE.as_bytes(),
-        chain.mempool_snapshot(),
-        fees,
+        chain.mempool_snapshot_with_fees(),
         uncles,
     )?;
     let hash = chain

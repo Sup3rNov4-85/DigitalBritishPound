@@ -21,6 +21,11 @@ impl Mempool {
         self.entries.values().map(|(tx, _)| tx.clone()).collect()
     }
 
+    /// Transactions with their fees, for fee-aware block assembly.
+    pub fn snapshot_with_fees(&self) -> Vec<(Transaction, u64)> {
+        self.entries.values().cloned().collect()
+    }
+
     pub fn insert(&mut self, tx: Transaction, fee: u64) -> bool {
         let txid = match tx.compute_hash() {
             Ok(h) => *h.as_bytes(),

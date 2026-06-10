@@ -17,6 +17,10 @@ dbc-installer.exe
 DBC-Windows-Release.zip
 /release-package/data/
 
+# Local scratch / one-off runs
+/genesis-mine-work/
+build-out.txt
+
 # OS / editor
 .DS_Store
 Thumbs.db

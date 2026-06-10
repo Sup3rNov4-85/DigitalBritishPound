@@ -1,7 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
-    consensus::block_subsidy_units,
+    consensus::{block_subsidy_units, MAX_BLOCK_BYTES},
     crypto::{british_work::pow_hash, wallet::Address},
     hash_meets_target,
     node::uncles::uncle_reward_units,
@@ -19,14 +19,18 @@ pub enum MinerError {
 pub struct Miner;
 
 impl Miner {
+    /// Assemble and mine the next block.
+    ///
+    /// `candidate_txs` are mempool transactions with their fees. They are
+    /// packed greedily by fee rate under the 2 MB consensus limit; the
+    /// coinbase only claims fees for transactions actually included.
     pub fn mine_next_block(
         prev_hash: Hash,
         height: u64,
         difficulty_target: u32,
         payout: Address,
         coinbase_message: &[u8],
-        transactions: Vec<Transaction>,
-        fees_units: u64,
+        candidate_txs: Vec<(Transaction, u64)>,
         uncle_blocks: Vec<BlockHeader>,
     ) -> Result<Block, MinerError> {
         let mut cb_data = Vec::new();
@@ -45,48 +49,66 @@ impl Miner {
             uncle_hashes.push(Hash::from_bytes(*blake3::hash(&bytes).as_bytes()));
         }
 
-        let subsidy = block_subsidy_units(height).saturating_add(fees_units);
         let coinbase = Transaction {
             version: 1,
             inputs: vec![coinbase_input],
-            outputs: vec![TxOutput::new(subsidy, script_pubkey)],
+            outputs: vec![TxOutput::new(block_subsidy_units(height), script_pubkey)],
             locktime: 0,
         };
 
-        let mut txs = Vec::with_capacity(1 + transactions.len());
-        txs.push(coinbase);
-        txs.extend(transactions);
-        let merkle_root = compute_merkle_root(&txs).map_err(|e| MinerError::Ser(e.to_string()))?;
-
+        // Base block (coinbase + uncles, no mempool txs) to measure the size budget.
         let timestamp = now_secs();
         let header = BlockHeader {
             version: 1,
             previous_block_hash: prev_hash,
-            merkle_root,
+            merkle_root: Hash::ZERO,
             timestamp,
             difficulty_target,
             nonce: 0,
             height,
             uncle_hashes,
         };
-
-        let block = Block {
+        let mut block = Block {
             header,
-            transactions: txs,
+            transactions: vec![coinbase],
             uncle_blocks,
         };
+        let base_size = bincode::serialize(&block)
+            .map_err(|e| MinerError::Ser(e.to_string()))?
+            .len();
+        let budget = MAX_BLOCK_BYTES.saturating_sub(base_size);
 
-        // Adjust coinbase for uncle rewards after we know uncles.
-        let mut block = block;
-        let uncle_pay = uncle_reward_units(&block).map_err(|e| MinerError::Ser(e.to_string()))?;
-        if uncle_pay > 0 {
-            block.transactions[0].outputs[0].value = block.transactions[0].outputs[0]
-                .value
-                .saturating_add(uncle_pay);
-            let merkle_root =
-                compute_merkle_root(&block.transactions).map_err(|e| MinerError::Ser(e.to_string()))?;
-            block.header.merkle_root = merkle_root;
+        // Greedy fee-rate packing under the 2 MB consensus limit.
+        let mut cands: Vec<(Transaction, u64, usize)> = Vec::with_capacity(candidate_txs.len());
+        for (tx, fee) in candidate_txs {
+            let size = bincode::serialize(&tx)
+                .map_err(|e| MinerError::Ser(e.to_string()))?
+                .len();
+            cands.push((tx, fee, size));
         }
+        cands.sort_by(|(_, fa, sa), (_, fb, sb)| {
+            // fee_a/size_a vs fee_b/size_b without floats, descending.
+            (fb.saturating_mul(*sa as u64)).cmp(&fa.saturating_mul(*sb as u64))
+        });
+        let mut used = 0usize;
+        let mut included_fees = 0u64;
+        for (tx, fee, size) in cands {
+            if used.saturating_add(size) > budget {
+                continue;
+            }
+            used += size;
+            included_fees = included_fees.saturating_add(fee);
+            block.transactions.push(tx);
+        }
+
+        // Coinbase claims subsidy + fees of included txs + uncle inclusion bonus.
+        let uncle_pay = uncle_reward_units(&block).map_err(|e| MinerError::Ser(e.to_string()))?;
+        block.transactions[0].outputs[0].value = block.transactions[0].outputs[0]
+            .value
+            .saturating_add(included_fees)
+            .saturating_add(uncle_pay);
+        block.header.merkle_root =
+            compute_merkle_root(&block.transactions).map_err(|e| MinerError::Ser(e.to_string()))?;
 
         // BritishWork PoW grind on header.
         loop {

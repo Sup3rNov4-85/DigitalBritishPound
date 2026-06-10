@@ -82,18 +82,33 @@ impl Chain {
     }
 
     /// Select up to 2 uncle headers from the orphan pool for mining.
+    ///
+    /// Skips candidates that would fail uncle validation: already included as
+    /// an uncle in the lookback window, or duplicates within the selection.
     pub fn select_uncles(&self) -> Result<Vec<BlockHeader>, ChainError> {
+        use crate::node::uncles::{header_id, uncle_already_included};
+
         let tip_h = self.tip()?.map(|t| t.height).unwrap_or(0);
         let next_h = tip_h + 1;
         let min_h = next_h.saturating_sub(crate::consensus::UNCLE_LOOKBACK_BLOCKS);
         let orphans = self.inner.orphans.lock().unwrap();
-        let mut out = Vec::new();
+        let mut out: Vec<BlockHeader> = Vec::new();
+        let mut seen: Vec<crate::Hash> = Vec::new();
         for block in orphans.values() {
-            if block.header.height >= min_h && block.header.height < next_h {
-                out.push(block.header.clone());
-                if out.len() >= crate::consensus::MAX_UNCLES_PER_BLOCK {
-                    break;
-                }
+            if block.header.height < min_h || block.header.height >= next_h {
+                continue;
+            }
+            let id = header_id(&block.header);
+            if seen.contains(&id) {
+                continue;
+            }
+            if uncle_already_included(&self.inner.db, next_h, &id)? {
+                continue;
+            }
+            seen.push(id);
+            out.push(block.header.clone());
+            if out.len() >= crate::consensus::MAX_UNCLES_PER_BLOCK {
+                break;
             }
         }
         Ok(out)
@@ -218,13 +233,8 @@ impl Chain {
         self.inner.mempool.lock().unwrap().snapshot()
     }
 
-    pub fn mempool_fees(&self) -> Result<u64, ChainError> {
-        let height = self.tip()?.map(|t| t.height).unwrap_or(0);
-        let mut total = 0u64;
-        for tx in self.mempool_snapshot() {
-            let info = validate_transaction(&self.inner.utxos, &tx, height)?;
-            total = total.saturating_add(info.fees_units);
-        }
-        Ok(total)
+    /// Mempool transactions paired with their fees, for block assembly.
+    pub fn mempool_snapshot_with_fees(&self) -> Vec<(crate::Transaction, u64)> {
+        self.inner.mempool.lock().unwrap().snapshot_with_fees()
     }
 }

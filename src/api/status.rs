@@ -13,7 +13,7 @@ pub struct NodeStatusSnapshot {
     /// Reachable nodes in encrypted peers.enc (community pool size).
     #[serde(default)]
     pub peer_pool_size: u32,
-    /// `off` | `solo` | `lead` | `sync` — how this node is helping the chain.
+    /// `off` | `solo` | `network` — mining state for the UI.
     #[serde(default)]
     pub mining_mode: String,
 }
