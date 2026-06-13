@@ -10,7 +10,7 @@
 **/utxo/
 **/LOCK
 
-# Release binaries (host on Drive / GitHub Releases instead)
+# Release binaries (host on Google Drive instead)
 /release-package/*.exe
 /release-package/dbc-node
 dbc-installer.exe

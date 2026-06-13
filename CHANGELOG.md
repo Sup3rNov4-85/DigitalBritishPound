@@ -1,9 +1,22 @@
 # Changelog
 
+## 1.0.2 — 2026-06-10
+
+### Network
+- Never stop outbound peer search (removed listen-only after 45s); dial every 30s while offline
+- UPnP external address registered in peer pool so other miners can find you
+- Identify: learn peer listen addresses and dial them; merge into encrypted pool
+- Sync every 5s while connected + every 30s peer tick + before each mine attempt
+- Abort stale mining when a network block arrives; wake miner for next height immediately
+- Launcher enables mDNS so friends on the same LAN discover each other
+
+### UI
+- Peers: 0 warning when solo; chain height updates when sync catches up from status.json
+- Download links point to official Google Drive installer
+
 ## 1.0.1 — 2026-06-10
 
 ### Network
-- **All miners grind together** when peers are online (removed designated-miner / sync-only mode)
 - Bootstrap shortcut removed — block 1 inherits genesis difficulty (`0x1f00ffff`); retarget at 1,008 blocks unchanged
 - Encrypted peer pool grows from successful dials; community nodes dial oldest-first, DuckDNS last
 - Mining on `spawn_blocking` so P2P accept loop is not blocked
@@ -15,7 +28,7 @@
 - Status from `status.json`: `peer_pool_size`, `mining_mode`
 
 ### Docs
-- GitHub Releases as primary download; README/LAUNCH/FAQ updated
+- Official Windows installer download via Google Drive; README/LAUNCH/FAQ updated
 - USER_GUIDE, README, REDDIT aligned with DNS-only bootstrap and Launcher flow
 
 ## 1.0.0 — 2026-06-05

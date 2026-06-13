@@ -1,6 +1,6 @@
-Digital British Coin (DBC) — Release Package v1.0.1
+Digital British Coin (DBC) — Release Package v1.0.2
 
-Download: https://github.com/Sup3rNov4-85/DigitalBritishPound/releases
+Download: https://drive.google.com/file/d/1fHCBOKxuf4bjEJXtgzF1IjD1JHwI9bpJ/view?usp=sharing
 
 Genesis hash (MUST match):
 87f9442d436c6627f00a4bc025e149d0c2fe30dc5f77eb2c18acd086ba582a7d

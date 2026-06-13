@@ -249,6 +249,8 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
 
     let mining_controlled = cfg.mine || cfg.mine_ctl_file.is_some();
     let (mine_tx, mut mine_rx) = tokio::sync::mpsc::channel::<()>(4);
+    /// Wake mining loop immediately after syncing a block from the network.
+    let mine_tx_wakeup = mine_tx.clone();
 
     if mining_controlled {
         // Create mine_ctl only if missing — the UI writes "1"/"0" before spawning; do not overwrite.
@@ -289,14 +291,19 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
     }
 
     let mut kad_refresh = tokio::time::interval(Duration::from_secs(300));
-    let mut peer_search = tokio::time::interval(Duration::from_secs(45));
-    /// After this many failed search ticks (~45s each), listen only instead of dialling.
-    const SWITCH_TO_HOST_AFTER: u32 = 1;
-    /// While hosting, retry outbound dials every N search ticks (~6 min).
-    const RECONNECT_WHILE_HOSTING: u32 = 8;
-    let mut listen_only = !dial_peers;
-    let mut peer_search_attempts = 0u32;
+    let mut peer_search = tokio::time::interval(Duration::from_secs(30));
     let mut status_tick = tokio::time::interval(Duration::from_secs(5));
+    let listen_port = cfg
+        .listen
+        .iter()
+        .find_map(|p| {
+            if let libp2p::multiaddr::Protocol::Tcp(port) = p {
+                Some(port)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(8333);
     let status_data_dir = data_dir.to_path_buf();
     let status_mine_ctl = cfg.mine_ctl_file.clone();
     let status_always_mine = cfg.mine;
@@ -325,6 +332,7 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
                             .await?;
                             if accepted {
                                 abort_mining_task(&mut mining_task);
+                                let _ = mine_tx_wakeup.try_send(());
                             }
                         }
                     }
@@ -333,7 +341,19 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
                     }
                     SwarmEvent::Behaviour(NodeEvent::Upnp(ev)) => match ev {
                         upnp::Event::NewExternalAddr(addr) => {
-                            info!("upnp: router mapped external address {addr} — node is reachable from the internet");
+                            info!("upnp: router mapped external address {addr} — registering in peer pool");
+                            let mut dialable = addr.clone();
+                            use libp2p::multiaddr::Protocol;
+                            if !dialable.iter().any(|p| matches!(p, Protocol::Tcp(_))) {
+                                dialable.push(Protocol::Tcp(listen_port));
+                            }
+                            if let Ok(with_peer) = dialable.with_p2p(local_peer_id) {
+                                if registry.add_multiaddr(&with_peer) {
+                                    let _ = registry.save_encrypted(&peers_enc_path);
+                                    kad_add_pool_addresses(&mut swarm, &registry);
+                                    let _ = publish_peer_list(&mut swarm, &registry, &peers_topic);
+                                }
+                            }
                         }
                         upnp::Event::ExpiredExternalAddr(addr) => {
                             warn!("upnp: external address {addr} expired");
@@ -347,8 +367,18 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
                     },
                     SwarmEvent::Behaviour(NodeEvent::Identify(identify::Event::Received { peer_id, info, .. })) => {
                         for addr in info.listen_addrs {
-                            swarm.behaviour_mut().kad.add_address(&peer_id, addr);
+                            swarm.behaviour_mut().kad.add_address(&peer_id, addr.clone());
+                            let with_peer = addr.clone().with_p2p(peer_id).unwrap_or_else(|_| addr.clone());
+                            if registry.record_reachable_peer(&with_peer) {
+                                let _ = registry.save_encrypted(&peers_enc_path);
+                            }
+                            if !swarm.connected_peers().any(|p| *p == peer_id) {
+                                if let Err(e) = swarm.dial(with_peer) {
+                                    warn!("dial peer {peer_id} via identify failed: {e}");
+                                }
+                            }
                         }
+                        kad_add_pool_addresses(&mut swarm, &registry);
                     }
                     SwarmEvent::Behaviour(NodeEvent::Mdns(mdns::Event::Discovered(list))) => {
                         for (peer, addr) in list {
@@ -362,8 +392,6 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
                         info!("connected to {peer_id}");
-                        listen_only = false;
-                        peer_search_attempts = 0;
                         let remote = match endpoint {
                             libp2p::core::connection::ConnectedPoint::Dialer { address, .. } => {
                                 address.clone()
@@ -385,8 +413,8 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
                             );
                             kad_add_pool_addresses(&mut swarm, &registry);
                         }
-                        publish_peer_list(&mut swarm, &registry, &peers_topic)?;
-                        request_next_block(&mut swarm, &chain, &sync_topic)?;
+                        let _ = publish_peer_list(&mut swarm, &registry, &peers_topic);
+                        let _ = request_next_block(&mut swarm, &chain, &sync_topic);
                     }
                     _ => {}
                 }
@@ -396,35 +424,18 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
             }
             _ = peer_search.tick(), if dial_peers => {
                 initial_peer_search_done = true;
-                if swarm.connected_peers().next().is_some() {
-                    peer_search_attempts = 0;
-                    listen_only = false;
-                } else if listen_only {
-                    peer_search_attempts = peer_search_attempts.saturating_add(1);
-                    if peer_search_attempts % RECONNECT_WHILE_HOSTING == 0 {
-                        info!("retrying peer search while hosting");
-                        bootstrap = build_dial_targets(
-                            &registry,
-                            &extra_bootstrap,
-                            peers_file.as_deref(),
-                        );
-                        dial_peer_list(&mut swarm, &bootstrap, "background");
-                    }
+                bootstrap = build_dial_targets(
+                    &registry,
+                    &extra_bootstrap,
+                    peers_file.as_deref(),
+                );
+                let connected = swarm.connected_peers().next().is_some();
+                if connected {
+                    let _ = request_next_block(&mut swarm, &chain, &sync_topic);
+                    let _ = publish_peer_list(&mut swarm, &registry, &peers_topic);
                 } else {
-                    peer_search_attempts = peer_search_attempts.saturating_add(1);
-                    bootstrap = build_dial_targets(
-                        &registry,
-                        &extra_bootstrap,
-                        peers_file.as_deref(),
-                    );
-                    dial_peer_list(&mut swarm, &bootstrap, "retry");
-                    if peer_search_attempts >= SWITCH_TO_HOST_AFTER {
-                        listen_only = true;
-                        peer_search_attempts = 0;
-                        info!(
-                            "no peers found — switching to listen-only mode (waiting for incoming connections)"
-                        );
-                    }
+                    info!("searching for peers — {} dial target(s)", bootstrap.len());
+                    dial_peer_list(&mut swarm, &bootstrap, "periodic");
                 }
             }
             _ = status_tick.tick() => {
@@ -432,6 +443,14 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
                 let tip_height = chain.tip().ok().flatten().map(|t| t.height);
                 let mining_enabled = mining_ctl_enabled(status_always_mine, &status_mine_ctl);
                 let policy = mining_policy(&swarm, mining_enabled);
+                // While peers are connected, re-ask for the next block every few seconds so we
+                // catch up if another miner found it while we were grinding (gossip can be missed).
+                if peer_count > 0 {
+                    if let Ok(next) = chain.tip().map(|t| t.map(|x| x.height + 1).unwrap_or(0)) {
+                        info!("sync — asking network for block height={next}");
+                    }
+                    let _ = request_next_block(&mut swarm, &chain, &sync_topic);
+                }
                 let _ = write_status(
                     &status_data_dir,
                     &NodeStatusSnapshot {
@@ -450,6 +469,9 @@ pub async fn run_p2p(data_dir: &Path, chain: Chain, cfg: P2pConfig) -> anyhow::R
                 if policy.should_mine() && initial_peer_search_done {
                     if let Some(payout) = cfg.payout {
                         let peer_n = swarm.connected_peers().count();
+                        // Sync before grinding so a long-running solo session picks up blocks
+                        // found by others since the last connect event.
+                        let _ = request_next_block(&mut swarm, &chain, &sync_topic);
                         match prepare_mine_job(&chain, payout) {
                             Ok(job) => {
                                 info!("{}", policy.mining_log_line(job.height, peer_n));
@@ -634,9 +656,13 @@ async fn handle_network_message(
             Err(e) => warn!("mempool reject: {e}"),
         },
         NetworkMessage::GetBlock { height } => {
-            let block = chain.db().get_block_at_height(height)?;
-            let reply = NetworkMessage::BlockReply { height, block };
-            publish(swarm, sync_topic, &reply)?;
+            if let Ok(Some(block)) = chain.db().get_block_at_height(height) {
+                let reply = NetworkMessage::BlockReply {
+                    height,
+                    block: Some(block),
+                };
+                publish(swarm, sync_topic, &reply)?;
+            }
         }
         NetworkMessage::BlockReply { height, block } => {
             if let Some(block) = block {

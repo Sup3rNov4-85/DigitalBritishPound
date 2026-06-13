@@ -185,6 +185,8 @@ impl NodeStatus {
         }
         if let Some(h) = parse_height_after(line, "synced block height=") {
             self.network_line = format!("Synced — block height {h}");
+            self.mining_line =
+                format!("Peer found block {h} — switched to mining block {}…", h + 1);
             return Some(h);
         }
         if let Some(h) = parse_height_after(line, "mined block height=") {
@@ -198,8 +200,9 @@ impl NodeStatus {
         }
         if line.contains("solo mining block height=") {
             if let Some(h) = parse_height_after(line, "solo mining block height=") {
-                self.mining_line =
-                    format!("Solo mining block {h} — no peers online (can take hours)…");
+                self.mining_line = format!(
+                    "Solo mining block {h} — no peers connected; other miners' blocks won't reach you until peers connect"
+                );
             }
             return None;
         }
@@ -521,7 +524,8 @@ impl DbcUiApp {
             .arg("--mine-ctl-file")
             .arg(mine_ctl_file)
             .arg("--bundled-peers")
-            .arg(bundled_peers.to_string_lossy().as_ref());
+            .arg(bundled_peers.to_string_lossy().as_ref())
+            .arg("--mdns");
 
         if !payout.is_empty() {
             cmd.arg("--address").arg(payout);
@@ -595,6 +599,11 @@ impl DbcUiApp {
     fn refresh_from_status_file(&mut self) {
         if let Some(snap) = read_status(&self.data_dir) {
             if let Some(h) = snap.tip_height {
+                if self.chain_height.map(|c| h > c).unwrap_or(false) {
+                    self.status.network_line = format!("Synced — block height {h}");
+                    self.status.mining_line =
+                        format!("Caught up to block {h} — mining block {}…", h + 1);
+                }
                 self.chain_height = Some(h);
             }
             self.status.peer_count = snap.peer_count;
@@ -802,7 +811,7 @@ impl eframe::App for DbcUiApp {
                     && !self.status.network_line.contains("Connected")
                 {
                     self.status.network_line =
-                        "Online — listening for peers (same as every other node)".to_string();
+                        "Online — still searching for peers every 30s (blocks sync once connected)".to_string();
                 }
             }
         }
@@ -898,8 +907,17 @@ impl eframe::App for DbcUiApp {
                     ui.colored_label(TEXT_MUTED_NAVY, "○ Offline");
                 }
                 ui.label(format!("Network: {}", self.status.network_line));
-                if self.status.peer_count > 0 {
-                    ui.label(format!("Peers: {}", self.status.peer_count));
+                if self.node_running() {
+                    if self.status.peer_count == 0 {
+                        ui.label(
+                            "Peers: 0 (solo — other miners' blocks won't reach you until peers connect)",
+                        );
+                    } else {
+                        ui.label(format!(
+                            "Peers: {} (connected — sync + mine together)",
+                            self.status.peer_count
+                        ));
+                    }
                 }
                 if let Some(h) = self.chain_height {
                     ui.label(format!("Chain height: {h}"));

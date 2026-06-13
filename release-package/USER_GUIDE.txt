@@ -6,7 +6,7 @@ This guide is for the Windows **DBC Launcher**. You do not need a command prompt
 
 ## Install
 
-1. Download `dbc-installer.exe` from the official release link.
+1. Download `dbc-installer.exe` from [Google Drive](https://drive.google.com/file/d/1fHCBOKxuf4bjEJXtgzF1IjD1JHwI9bpJ/view?usp=sharing).
 2. Run the installer (installs to your user folder — no admin required).
 3. Open **Digital British Coin (DBC) → DBC Launcher** from the Start Menu.
 

@@ -8,7 +8,7 @@ I’ve published an early reference full-node for **Digital British Coin (DBC)**
 
 **Repo:** https://github.com/Sup3rNov4-85/DigitalBritishPound
 
-**Download (Windows installer):** https://github.com/Sup3rNov4-85/DigitalBritishPound/releases (Drive mirror in README if needed)
+**Download (Windows installer):** https://drive.google.com/file/d/1fHCBOKxuf4bjEJXtgzF1IjD1JHwI9bpJ/view?usp=sharing
 
 **Source + docs:** https://github.com/Sup3rNov4-85/DigitalBritishPound
 
